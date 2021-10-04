@@ -35,6 +35,7 @@ class Tftp_parameters
             uint64_t size;
             bool multicast;
             transfer_mode_t mode;
+            int addr_family;
             std::string address;
             uint16_t port;
         } params_t;
@@ -42,25 +43,33 @@ class Tftp_parameters
     private:
         params_t params;
         req_arg_t param_with_arg;
+        char separator;
     public:
         Tftp_parameters();
 
         void init_values();
         bool parse(size_t &curr, std::vector<std::string> options);
+        bool set_properly();
         void print_params();
 
+        static long convert_to_number(std::string str, std::string option);
+
     private:
-        long convert_to_number(std::string str, std::string option);
-        bool validate_ipv4_address(std::string str);
-        bool validate_ipv6_address(std::string str);
+        bool set_address(std::string str);
+        bool set_filename(std::string str);
+        bool set_port(std::string str);
+        bool set_mode(std::string str);
+        bool set_size(std::string str);
+        bool set_timeout(std::string str);
+        bool set_address_port(size_t &curr, std::vector<std::string> options);
 
         bool check_req_type(request_type_t option);
         bool require_arg(size_t &curr, std::vector<std::string> options);
-        bool get_filename(std::string str);
-        bool get_timeout(std::string str);
-        bool get_size(std::string str);
-        bool get_mode(std::string str);
-        bool get_address_port(std::string str);
+        
+        bool parse_addr_with_port(std::string str);
+        bool parse_addr_with_sep(size_t curr, std::vector<std::string> options);
+        bool parse_port_with_sep(size_t curr, std::vector<std::string> options);
+        bool parse_addr_with_spaces(size_t &curr, std::vector<std::string> options);
 };
 
 #endif

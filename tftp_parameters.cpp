@@ -1,26 +1,11 @@
 #include <iostream>
 #include <regex>
+#include <arpa/inet.h>
+#include <netinet/in.h>
 
 #include "tftp_parameters.h"
 
-Tftp_parameters::Tftp_parameters()
-{
-    init_values();
-}
-
-void Tftp_parameters::init_values()
-{
-    this->param_with_arg = NOT_DEFINED;
-
-    this->params.req_type = UNKNOWN;
-    this->params.filename = "";
-    this->params.timeout = -1;
-    this->params.size = 512;
-    this->params.multicast = false;
-    this->params.mode = BINARY;
-    this->params.address = "127.0.0.1";
-    this->params.port = 69;
-}
+// METHODS FOR DEBUGGING
 
 void Tftp_parameters::print_params()
 {
@@ -29,37 +14,13 @@ void Tftp_parameters::print_params()
  std::cout << "Timeout: " << this->params.timeout << std::endl;   
  std::cout << "Size: " << this->params.size << std::endl;   
  std::cout << "Multicast: " << this->params.multicast << std::endl;   
- std::cout << "Mode: " << this->params.mode << std::endl;   
+ std::cout << "Mode: " << this->params.mode << std::endl;
+ std::cout << "Address family: " << this->params.addr_family << std::endl;
  std::cout << "Address: " << this->params.address << std::endl;   
  std::cout << "Port: " << this->params.port << std::endl;   
 }
 
-bool Tftp_parameters::check_req_type(request_type_t option)
-{
-    bool ret = false;
-    std::vector<std::string> types{ "-R", "-W" };
-
-    if(this->params.req_type != UNKNOWN && this->params.req_type != option) {
-        ret = false;
-        std::cerr <<  "Type of request already specified! Cannot combine \"" 
-                << types[option - 1] << "\" with " << types[this->params.req_type - 1] << "." << std::endl;
-    }
-
-    return ret;
-}
-
-bool Tftp_parameters::get_filename(std::string str)
-{
-    bool ret = false;
-    this->params.filename = str;
-
-    if(str.empty() || str.at(0) != '/') {
-        ret = true;
-        std::cerr << "Invalid form of argument for option -d (HINT absolute path)!" << std::endl;
-    }
-
-    return ret;
-} 
+// STATIC METHODS
 
 long Tftp_parameters::convert_to_number(std::string str, std::string option)
 {
@@ -67,84 +28,305 @@ long Tftp_parameters::convert_to_number(std::string str, std::string option)
     long res = std::strtol(str.c_str(), &end, 10);
 
     if(*end) {
-        std::cerr << "Argument for option " << option << " may consist of digits only! " << std::endl;
+        std::cerr << option << " may consist of digits only! " << std::endl;
         return -1;       
     }
 
     if(res <= 0) {
-        std::cerr << "Argument for option " << option << " must be a number larger than 0" << std::endl;
+        std::cerr << option << " must be a number larger than 0" << std::endl;
         return -1;       
     }
 
     return res;
 }
 
-bool Tftp_parameters::get_timeout(std::string str)
+static bool split(std::string str, std::string pattern, std::vector<std::string> &vec)
 {
-    this->params.timeout = convert_to_number(str, "-t");
-    
-    return this->params.timeout < 0;
+    bool ret = true;
+
+    std::regex reg(pattern);
+    std::sregex_token_iterator start(str.begin(), str.end(), reg, -1);
+    std::sregex_token_iterator end;
+
+    vec.clear();
+    vec.insert(vec.end(), start, end);
+
+    //first string is empty
+    if(!vec.empty() && vec.begin()->empty()) {
+        vec.erase(vec.begin());
+        ret = false;
+        std::cout << "44444\n";
+    }
+    std::cout << "Vec: " << vec.size() << std::endl;
+
+    return ret;
 }
 
-bool Tftp_parameters::get_size(std::string str)
-{
-    long ret;
+// PUBLIC INSTANCE METHODS
 
-    if((ret =convert_to_number(str, "-s")) < 0) {
-        return true;
+// constructor
+Tftp_parameters::Tftp_parameters()
+{
+    init_values();
+}
+
+// sets initial values
+void Tftp_parameters::init_values()
+{
+    this->param_with_arg = NOT_DEFINED;
+    this->separator = ',';
+
+    this->params.req_type = UNKNOWN;
+    this->params.filename = "";
+    this->params.timeout = -1;
+    this->params.size = 512;
+    this->params.multicast = false;
+    this->params.mode = BINARY;
+    this->params.addr_family = AF_INET;
+    this->params.address = "127.0.0.1";
+    this->params.port = 69;
+}
+
+bool Tftp_parameters::parse(size_t &curr, std::vector<std::string> options)
+{
+    bool ret;
+
+    // READ from server
+    if(options[curr] == "-R") {
+        ret = check_req_type(READ);
+        this->params.req_type = READ;
+    // WRITE to server
+    } else if(options[curr] == "-W") {
+        ret = check_req_type(WRITE);
+        this->params.req_type = WRITE;
+    // request multicast
+    } else if(options[curr] == "-m") {
+        ret = false;
+        this->params.multicast = true;
+    // file to upload/download
+    } else if(options[curr] == "-d") {
+        this->param_with_arg = DATA;
+        ret = require_arg(curr, options);
+    // timeout
+    } else if(options[curr] == "-t") {
+        this->param_with_arg = TIMEOUT;
+        ret = require_arg(curr, options);
+    // block size
+    } else if(options[curr] == "-s") {
+        this->param_with_arg = SIZE;
+        ret = require_arg(curr, options);
+    // format mode
+    } else if(options[curr] == "-c") {
+        this->param_with_arg = MODE;
+        ret = require_arg(curr, options);
+    // address + port
+    } else if(options[curr] == "-a") {
+        this->param_with_arg = ADDRESS_PORT;
+        ret = require_arg(curr, options);
+    // invalid option
+    } else {
+        ret = false;
+        std::cerr << "Invalid option \"" << options[curr] << "\"" << std::endl;
     }
 
-    this->params.size = ret;
-    return false;
+    std::cout << "ret: " << ret << "\n";
+    return ret;
 }
 
-bool Tftp_parameters::get_mode(std::string str)
+bool Tftp_parameters::set_properly()
 {
-    bool ret = false;
+    // -R or -W has to be used
+    if(this->params.req_type == UNKNOWN) {
+        std::cerr << "-R or -W  has to be used!" << std::endl;
+        return false;
+    }
 
+    // filename has to be specified
+    if(this->params.filename.empty()) {
+        std::cerr << "File to upload/download has to be specified!" << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+// PRIVATE INSTANCE METHODS
+
+bool Tftp_parameters::set_address(std::string str)
+{
+    struct in_addr ipv4_addr;
+    struct in6_addr ipv6_addr;
+
+    // valid ipv4 address
+    if(inet_pton(AF_INET, str.c_str(), &ipv4_addr) == 1) {
+        this->params.addr_family = AF_INET;
+        std::cout << "ipv4\n";
+    //valid ipv6 address
+    } else if(inet_pton(AF_INET6, str.c_str(), &ipv6_addr) == 1) {
+        std::cout << "ipv6\n";
+        this->params.addr_family = AF_INET6;
+    } else {
+        std::cerr << "Invalid type address given (neighter ipv4 nor ipv6)!" << std::endl;
+        return false;
+    }
+
+    this->params.address = str;
+    return true;
+}
+
+bool Tftp_parameters::set_filename(std::string str)
+{
+    if(str.empty() || str.at(0) != '/') {
+        std::cerr << "Invalid form of argument for option -d (HINT absolute path)!" << std::endl;
+        return false;
+    }
+
+    this->params.filename = str;
+    return true;
+} 
+
+bool Tftp_parameters::set_mode(std::string str)
+{
     if(str == "ascii" || str == "netascii") {
         this->params.mode = ASCII;
     } else if(str == "binary" || str == "octet") {
         this->params.mode = BINARY;
     } else {
         std::cerr << "Unsuported argument for option -c (mode)!" << std::endl;
-        ret = true;
-    }
-
-    return ret;
-}
-
-bool Tftp_parameters::validate_ipv4_address(std::string str)
-{
-    std::regex ipv4_addr(
-        "^(([0-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-5])\\.){3}([0-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-5])$"
-    );
-
-    return std::regex_match(str, ipv4_addr);
-}
-
-bool Tftp_parameters::validate_ipv6_address(std::string str)
-{
-    std::regex ipv6_addr(
-        "^((([0-9a-fA-F]){1,4})\\:){7}([0-9a-fA-F]){1,4}$"
-    );
-
-    return std::regex_match(str, ipv6_addr);
-}
-
-bool Tftp_parameters::get_address_port(std::string str)
-{
-    if(validate_ipv4_address(str)) {
-        this->params.address = str;
-        return false;
-    } else if(validate_ipv6_address(str)) {
-        this->params.address = str;
         return false;
     }
 
-    std::cerr << "Invalid address (IPV4 nor IPV6)!" << std::endl;
     return true;
+}
 
+bool Tftp_parameters::set_port(std::string str)
+{
+    long ret;
+
+    if((ret = convert_to_number(str, "Port")) < 0 || ret > 65535) {
+        return false;
+    }
+
+    this->params.port = ret;
+    return true;
+}
+
+bool Tftp_parameters::set_size(std::string str)
+{
+    long ret;
+
+    if((ret =convert_to_number(str, "Block size")) < 0) {
+        return false;
+    }
+
+    this->params.size = ret;
+    return true;
+}
+
+bool Tftp_parameters::set_timeout(std::string str)
+{
+    this->params.timeout = convert_to_number(str, "Timeout");
+    
+    return this->params.timeout > 0;
+}
+
+bool Tftp_parameters::check_req_type(request_type_t option)
+{
+    std::vector<std::string> types{ "-R", "-W" };
+
+    if(this->params.req_type != UNKNOWN && this->params.req_type != option) {
+        std::cerr <<  "Type of request already specified! Cannot combine \"" 
+                << types[option - 1] << "\" with " << types[this->params.req_type - 1] << "." << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+bool Tftp_parameters::parse_addr_with_sep(size_t curr, std::vector<std::string> options)
+{
+    std::string str = options[curr];
+
+    if(str[str.size() - 1] == this->separator) {
+        str.erase(str.end() - 1);
+        std::cout << str << std::endl;
+
+        return set_address(str) && (curr + 1) < options.size();
+    }
+
+    return false;
+}
+
+bool Tftp_parameters::parse_port_with_sep(size_t curr, std::vector<std::string> options)
+{
+    std::string str;
+
+    if(curr + 1 >= options.size()) {
+        return false;
+    }
+
+    str = options[curr + 1];
+    if(str[0] == this->separator) {
+        str.erase(str.begin());
+
+        std::cout << "xxxx\n";
+        return set_address(options[curr]) && set_port(str);
+    }
+
+    return false;
+}
+
+bool Tftp_parameters::parse_addr_with_spaces(size_t &curr, std::vector<std::string> options)
+{
+    std::string sep;
+
+    //need addrses, separator and port number
+    if(curr + 2 >= options.size()) {
+        return false;
+    }
+
+    sep = options[curr + 1];
+
+    //check separator
+    if(sep[sep.size() - 1] != this->separator) {
+        std::cerr << "Invalid separator!" << std::endl;
+        return false;
+    }
+
+    return set_address(options[curr]);
+}
+
+bool Tftp_parameters::parse_addr_with_port(std::string str)
+{
+    std::vector<std::string> vec;
+
+    if(!split(str, ",", vec) || vec.size() != 2) {
+        return false;
+    }
+
+    return set_address(vec[0]) && set_port(vec[1]);
+}
+
+bool Tftp_parameters::set_address_port(size_t &curr, std::vector<std::string> options)
+{
+    //<ADDRESS>,<PORT>
+    if(parse_addr_with_port(options[curr])) {
+        return true;
+    //<ADDRESS>, + <PORT>
+    } else if(parse_addr_with_sep(curr, options)) {
+        curr++;
+    } else if(parse_port_with_sep(curr, options)) {
+        curr++;
+        return true;
+    //<ADDRESS> + , + <PORT>
+    } else if(parse_addr_with_spaces(curr, options)) {
+        curr += 2;
+    } else {
+        std::cerr << "Invalid arguments for option -a!" << std::endl;
+        return false;
+    }
+
+    return set_port(options[curr]);
 }
 
 bool Tftp_parameters::require_arg(size_t &curr, std::vector<std::string> options)
@@ -152,7 +334,6 @@ bool Tftp_parameters::require_arg(size_t &curr, std::vector<std::string> options
     if(this->param_with_arg == NOT_DEFINED) {
         return false;
     }
-
     if(curr + 1 >= options.size()) {
         std::cerr << "Option " << options[curr] << " requires argument (see HELP)!" << std::endl;
         return false;
@@ -162,53 +343,17 @@ bool Tftp_parameters::require_arg(size_t &curr, std::vector<std::string> options
 
     switch(this->param_with_arg) {
     case DATA:
-        return get_filename(options[curr]);
+        return set_filename(options[curr]);
     case TIMEOUT:
-        return get_timeout(options[curr]);
+        return set_timeout(options[curr]);
     case SIZE:
-        return get_size(options[curr]);
+        return set_size(options[curr]);
     case MODE:
-        return get_mode(options[curr]);
+        return set_mode(options[curr]);
     case ADDRESS_PORT:
-        return get_address_port(options[curr]);
+        return set_address_port(curr, options);
     default:
         return false;
     }
 
-}
-
-bool Tftp_parameters::parse(size_t &curr, std::vector<std::string> options)
-{
-    bool ret;
-
-    if(options[curr] == "-R") { // READ from server
-        ret = check_req_type(READ);
-        this->params.req_type = READ;
-    } else if(options[curr] == "-W") { // WRITE to server
-        ret = check_req_type(WRITE);
-        this->params.req_type = WRITE;
-    } else if(options[curr] == "-m") { // request multicast
-        ret = false;
-        this->params.multicast = true;
-    } else if(options[curr] == "-d") {
-        this->param_with_arg = DATA;
-        ret = require_arg(curr, options);
-    } else if(options[curr] == "-t") {
-        this->param_with_arg = TIMEOUT;
-        ret = require_arg(curr, options);
-    } else if(options[curr] == "-s") {
-        this->param_with_arg = SIZE;
-        ret = require_arg(curr, options);
-    } else if(options[curr] == "-c") {
-        this->param_with_arg = MODE;
-        ret = require_arg(curr, options);
-    } else if(options[curr] == "-a") {
-        this->param_with_arg = ADDRESS_PORT;
-        ret = require_arg(curr, options);
-    } else {
-        ret = true; //invalid option
-        std::cerr << "Invalid option \"" << options[curr] << "\"" << std::endl;
-    }
-
-    return ret;
 }

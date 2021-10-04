@@ -29,26 +29,36 @@ Parser::command_t Parser::parse_command()
 
     Parser::command_t ret = INVALID;
     size_t i = (this->options[0].empty())? 1 : 0;
-    bool error = false;
+    bool no_error = true;
 
     this->params.init_values();
 
 
-    while(!error && i < this->opt_count) {
+    while(no_error && i < this->opt_count) {
         if(this->options[i] == "HELP") {
             ret = HELP;
-            error = check_combination(ret, this->options[i]);
+            no_error = check_combination(ret, this->options[i]);
         } else if(this->options[i] == "QUIT") {
             ret = QUIT;
-            error = check_combination(ret, this->options[i]);
+            no_error = check_combination(ret, this->options[i]);
+        } else if(this->params.parse(i, this->options)) {
+            ret = TFTP;
+            std::cout << "fsdfsd\n";
         } else {
-            error = this->params.parse(i, this->options);
+            ret = INVALID;
+            no_error = false;
         }
 
         i++;
     }
 
     this->params.print_params(); 
+
+    // check validity of TFTP parameters
+    if(ret == TFTP && !this->params.set_properly()) {
+        ret = INVALID;
+    }
+
     return ret;
 }
 
@@ -61,8 +71,8 @@ bool Parser::check_combination(Parser::command_t &opt, std::string option)
     if(this->opt_count != expected) {
         opt = INVALID;
         std::cerr << "Option " << option << " cannot be combined with other options!" << std::endl;
-        return true;
+        return false;
     }
 
-    return false;
+    return true;
 }

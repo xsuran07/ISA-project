@@ -17,6 +17,7 @@ class Parser
         typedef enum {
             HELP,
             QUIT,
+            TFTP,
             INVALID,
         } command_t;
 

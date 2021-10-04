@@ -14,6 +14,9 @@ bool Terminal::perform_command()
         return true;
     case Parser::QUIT:
         return false;
+    case Parser::TFTP:
+        std::cout << "TFTP" << std::endl;
+        return true;
     case Parser::INVALID:
         return true;
     default:

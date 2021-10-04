@@ -10,5 +10,6 @@ int main()
 {
 	Terminal t;
 
-	return t.run();
+	t.run();
+	return 0;
 }

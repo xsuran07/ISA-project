@@ -1,3 +1,9 @@
+/*
+ * @author Jakub Šuráň (xsuran07)
+ * @file parser.c
+ * @brief Implementation of class representing command parser.
+ */
+
 #include <iostream>
 #include <regex>
 

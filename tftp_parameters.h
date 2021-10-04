@@ -1,3 +1,9 @@
+/*
+ * @author Jakub Šuráň (xsuran07)
+ * @file tftp_parameters.h
+ * @brief Interface of tftp_parameters class.
+ */
+
 #ifndef __TFTP_PARAMETERS_H_
 #define __TFTP_PARAMETERS_H_
 
@@ -5,9 +11,17 @@
 #include <vector>
 #include <stdint.h>
 
+/**
+ * @brief Class for parsing and validating parameters for
+ * tftp client.
+ */
 class Tftp_parameters
 {
-    public:
+    private:
+        /**
+         * @brief Enumaration of parameters which
+         * requires at least one argument.
+         */
         typedef enum {
             NOT_DEFINED,
             DATA,
@@ -17,17 +31,27 @@ class Tftp_parameters
             ADDRESS_PORT,
         } req_arg_t;
 
+    public:
+        /**
+         * @brief Enumaration of request types for TFTP client.
+         */
         typedef enum {
             UNKNOWN,
             READ,
             WRITE,
         } request_type_t;
 
+        /**
+         * @brief Types of data format modes.
+         */
         typedef enum {
             ASCII,
             BINARY,
         } transfer_mode_t;
 
+        /**
+         * @brief Structure with parameters for TFTP client's request.
+         */
         typedef struct {
             request_type_t req_type;
             std::string filename;
@@ -53,6 +77,7 @@ class Tftp_parameters
         void print_params();
 
         static long convert_to_number(std::string str, std::string option);
+        static bool split_string(std::string str, std::string pattern, std::vector<std::string> &vec);
 
     private:
         bool set_address(std::string str);

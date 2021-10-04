@@ -1,3 +1,10 @@
+/*
+ * @author Jakub Šuráň (xsuran07)
+ * @file tftp_parameters.h
+ * @brief Implementation of tftp_parameters class.
+ */
+
+
 #include <iostream>
 #include <regex>
 #include <arpa/inet.h>
@@ -40,7 +47,7 @@ long Tftp_parameters::convert_to_number(std::string str, std::string option)
     return res;
 }
 
-static bool split(std::string str, std::string pattern, std::vector<std::string> &vec)
+bool Tftp_parameters::split_string(std::string str, std::string pattern, std::vector<std::string> &vec)
 {
     bool ret = true;
 
@@ -300,7 +307,7 @@ bool Tftp_parameters::parse_addr_with_port(std::string str)
 {
     std::vector<std::string> vec;
 
-    if(!split(str, ",", vec) || vec.size() != 2) {
+    if(!split_string(str, ",", vec) || vec.size() != 2) {
         return false;
     }
 

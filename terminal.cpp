@@ -1,3 +1,9 @@
+/*
+ * @author Jakub Šuráň (xsuran07)
+ * @file terminal.cpp
+ * @brief Implementation of class representing terminal.
+ */
+
 #include <iostream>
 #include <string>
 #include <vector>
@@ -24,9 +30,10 @@ bool Terminal::perform_command()
     }
 }
 
-int Terminal::run()
+void Terminal::run()
 {
     bool run = true;
+
 
 	while(run) {
 		std::cout << ">";
@@ -34,6 +41,4 @@ int Terminal::run()
 
         run = perform_command();
 	}
-
-    return 0;
 }

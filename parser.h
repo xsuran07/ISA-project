@@ -51,6 +51,8 @@ class Parser
          */
         command_t parse_command();
 
+        Tftp_parameters *get_params() { return &this->params; };
+
     private:
         /**
          * @brief Checks whether internal vector of strings includes only

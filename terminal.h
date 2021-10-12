@@ -10,6 +10,7 @@
 #include <string>
 
 #include "parser.h"
+#include "tftp_client.h"
 
 /**
  * @brief Class representing terminal which suppport
@@ -21,6 +22,7 @@ class Terminal
     private:
         std::string line;
         Parser p;
+        Tftp_client client;
 
     public:
         /**

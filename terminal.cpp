@@ -22,6 +22,7 @@ bool Terminal::perform_command()
         return false;
     case Parser::TFTP:
         std::cout << "TFTP" << std::endl;
+        this->client.communicate(this->p.get_params());
         return true;
     case Parser::INVALID:
         return true;

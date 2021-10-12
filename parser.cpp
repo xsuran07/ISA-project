@@ -9,6 +9,8 @@
 
 #include "parser.h"
 
+//#define DEBUG
+
 Parser::Parser()
 {
     this->opt_count = 0;
@@ -23,8 +25,6 @@ void Parser::set_options(std::string &str)
     this->options.clear();
     this->options.insert(this->options.end(), start, end);
     this->opt_count = this->options.size();
-
-    std::cout << this->opt_count << std::endl;
 }
         
 Parser::command_t Parser::parse_command()
@@ -39,7 +39,6 @@ Parser::command_t Parser::parse_command()
 
     this->params.init_values();
 
-
     while(no_error && i < this->opt_count) {
         if(this->options[i] == "HELP") {
             ret = HELP;
@@ -49,7 +48,6 @@ Parser::command_t Parser::parse_command()
             no_error = check_combination(ret, this->options[i]);
         } else if(this->params.parse(i, this->options)) {
             ret = TFTP;
-            std::cout << "fsdfsd\n";
         } else {
             ret = INVALID;
             no_error = false;
@@ -58,7 +56,9 @@ Parser::command_t Parser::parse_command()
         i++;
     }
 
+#ifdef DEBUG
     this->params.print_params(); 
+#endif
 
     // check validity of TFTP parameters
     if(ret == TFTP && !this->params.set_properly()) {

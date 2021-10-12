@@ -76,6 +76,15 @@ class Tftp_parameters
         bool set_properly();
         void print_params();
 
+        std::string get_address() { return this->params.address; };
+        int get_addr_family() { return this->params.addr_family; };
+        std::string get_filename() { return this->params.filename; };
+        uint16_t get_port() { return this->params.port; };
+        transfer_mode_t get_mode() { return this->params.mode; };
+        request_type_t get_req_type() { return this->params.req_type; };
+        uint64_t get_size() {return this->params.size; };
+        int get_timeout() { return this->params.timeout; };
+
         static long convert_to_number(std::string str, std::string option);
         static bool split_string(std::string str, std::string pattern, std::vector<std::string> &vec);
 

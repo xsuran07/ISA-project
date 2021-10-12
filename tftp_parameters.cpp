@@ -62,9 +62,7 @@ bool Tftp_parameters::split_string(std::string str, std::string pattern, std::ve
     if(!vec.empty() && vec.begin()->empty()) {
         vec.erase(vec.begin());
         ret = false;
-        std::cout << "44444\n";
     }
-    std::cout << "Vec: " << vec.size() << std::endl;
 
     return ret;
 }
@@ -136,7 +134,6 @@ bool Tftp_parameters::parse(size_t &curr, std::vector<std::string> options)
         std::cerr << "Invalid option \"" << options[curr] << "\"" << std::endl;
     }
 
-    std::cout << "ret: " << ret << "\n";
     return ret;
 }
 
@@ -167,10 +164,8 @@ bool Tftp_parameters::set_address(std::string str)
     // valid ipv4 address
     if(inet_pton(AF_INET, str.c_str(), &ipv4_addr) == 1) {
         this->params.addr_family = AF_INET;
-        std::cout << "ipv4\n";
     //valid ipv6 address
     } else if(inet_pton(AF_INET6, str.c_str(), &ipv6_addr) == 1) {
-        std::cout << "ipv6\n";
         this->params.addr_family = AF_INET6;
     } else {
         std::cerr << "Invalid type address given (neighter ipv4 nor ipv6)!" << std::endl;
@@ -256,7 +251,6 @@ bool Tftp_parameters::parse_addr_with_sep(size_t curr, std::vector<std::string> 
 
     if(str[str.size() - 1] == this->separator) {
         str.erase(str.end() - 1);
-        std::cout << str << std::endl;
 
         return set_address(str) && (curr + 1) < options.size();
     }
@@ -276,7 +270,6 @@ bool Tftp_parameters::parse_port_with_sep(size_t curr, std::vector<std::string> 
     if(str[0] == this->separator) {
         str.erase(str.begin());
 
-        std::cout << "xxxx\n";
         return set_address(options[curr]) && set_port(str);
     }
 

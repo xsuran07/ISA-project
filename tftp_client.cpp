@@ -55,11 +55,11 @@ void Tftp_client::logging(opcode_t type, bool sending)
 {
     std::string str;
 
-    print_timestamp();
-
     str += (sending)? "Sent " : "Recieved ";
 
     switch(type) {
+        case OPCODE_SKIP:
+            return;
         case OPCODE_ACK:
             str += "ACK ";
             break;
@@ -91,7 +91,14 @@ void Tftp_client::logging(opcode_t type, bool sending)
         std::cout << " - " << this->log;
     }
 
+    print_timestamp();
     std::cout << std::endl;
+}
+
+void Tftp_client::cleanup()
+{
+    close(this->sock);
+    this->file.close();
 }
 
 bool Tftp_client::set_ipv4(Tftp_parameters *params)
@@ -132,11 +139,16 @@ Tftp_client::Tftp_client() : out_buffer(new uint8_t[MAX_SIZE]), in_buffer(new ui
 bool Tftp_client::handle_exchange(Tftp_parameters *params)
 {
     bool ok = true;
+    bool skip = false;
     uint16_t resp_type;
     this->log.clear();
 
+
     // fill packet to send according to setting
     switch(this->send_type) {
+    case OPCODE_SKIP:
+        skip = true;
+        break;
     case OPCODE_RRQ:
         ok = fill_RRQ(params->get_filename().c_str());
         std::cout << "RRQ\n";
@@ -164,7 +176,7 @@ bool Tftp_client::handle_exchange(Tftp_parameters *params)
     }
 
     // send packet
-    if(!send_packet()) {
+    if(!skip && !send_packet()) {
         return false;
     }
 
@@ -174,7 +186,6 @@ bool Tftp_client::handle_exchange(Tftp_parameters *params)
         this->last = true;
         return true;
     }
-
 
     this->log.clear();
     
@@ -186,6 +197,7 @@ bool Tftp_client::handle_exchange(Tftp_parameters *params)
     std::cout << "LEN: " << this->resp_len << std::endl;
 
     if(!read_type(resp_type)) {
+        std::cout << "ssdfs\n";
         return false;
     }
 
@@ -198,8 +210,7 @@ bool Tftp_client::handle_exchange(Tftp_parameters *params)
         ok = parse_DATA();
         break;
     case OPCODE_ACK:
-        std::cout << "GOT ACK!\n";
-        ok = true;
+        ok = parse_ACK();
         break;
     default:
         std::cerr << "Got unknown type of tftp packet!" << std::endl;
@@ -336,6 +347,28 @@ bool Tftp_client::create_socket()
     return true;
 }
 
+bool Tftp_client::prepare_file(Tftp_parameters *params)
+{
+    std::vector<std::string> parts;
+    Tftp_parameters::split_string(params->get_filename(), "/", parts);
+    std::string name_of_file = parts[parts.size() - 1];
+    std::ios::openmode mode = std::fstream::binary;
+
+    if(params->get_req_type() == Tftp_parameters::READ) {
+        mode |= std::fstream::out;
+    } else {
+        mode |= std::fstream::in;
+    }
+
+    this->file.open(name_of_file, mode);
+    if(this->file.fail()) {
+        std::cerr << "Opening of file \"" << name_of_file << "\"failed!" << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
 bool Tftp_client::communicate(Tftp_parameters *params)
 {
     bool ok = true;
@@ -344,11 +377,20 @@ bool Tftp_client::communicate(Tftp_parameters *params)
     this->exp_resp = true;
     this->last = false;
 
+
+    // process and store address of the server
     if(!process_address(params)) {
         return false;
     }
 
+    // open and configure socket for communication
     if(!create_socket()) {
+        return false;
+    }
+
+    // try to open specified file
+    if(!prepare_file(params)) {
+        close(this->sock);
         return false;
     }
 
@@ -363,7 +405,7 @@ bool Tftp_client::communicate(Tftp_parameters *params)
         std::cout << "Transfer didn't complete sucessfully!" << std::endl;
     }
 
-    close(this->sock);
+    cleanup();
     return true;
 }
 
@@ -507,12 +549,51 @@ bool Tftp_client::fill_ACK()
         return true;
     } while(0);
 
-    std::cerr << "Error while creating  packet" << std::endl;
+    std::cerr << "Error while creating ACK packet" << std::endl;
     return false;
 }
 
 bool Tftp_client::fill_DATA()
 {
+    int c;
+    bool ok = false;
+
+    this->out_curr_pos = 0; // reinitialize
+    this->exp_type = OPCODE_ACK;
+
+    do {
+        if(!write_word(OPCODE_DATA)) {
+           break;
+        }
+
+        if(!write_word(this->block_num)) {
+            break;
+        }
+
+        ok = true;
+    } while(0);
+
+    if(!ok) {
+        std::cerr << "Error while creating DATA packet!" << std::endl;
+        return false;
+    }
+
+    // try to fill another block of data
+    while(this->out_curr_pos - 4 <= this->block_size) {
+        c = this->file.get();
+
+        // end of file reached => last block
+        if(c == EOF) {
+            this->last = true;
+            break;
+        }
+
+        if(!write_byte(c)) {
+            std::cerr << "Error while writing data into DATA packet!" << std::endl;
+            return false;
+        }
+    }
+
     return true;
 }
 
@@ -608,17 +689,18 @@ bool Tftp_client::parse_ACK()
         return false;
     }
 
-
     if(this->in_curr_pos != this->resp_len) {
         std::cerr << "Invalid ACK packet format!" << std::endl;
         return false;
     }
 
-    if(block_num != this->block_num) {
-        return false;
+    this->log += "block number " + std::to_string(block_num);
+
+    if(block_num < this->block_num) {
+        this->send_type = OPCODE_SKIP;
+        return true;
     }
 
-    this->log += "block number " + std::to_string(block_num);
 
     this->send_type = OPCODE_DATA;
     this->block_num++;
@@ -634,29 +716,33 @@ bool Tftp_client::parse_DATA()
         return false;
     }
 
-    if(!read_word(block_num))
+    if(!read_word(block_num)) {
+        std::cerr << "Error while reading block number from DATA packet!" << std::endl;
+        return false;
+    }
 
 
     std::cout << "TFTP DATA - block: " << block_num << std::endl;
 
     std::cout << "----------------------------------\n";
+    // try to read and store recieved data block
     while(this->in_curr_pos < this->resp_len) {
         if(!read_byte(c)) {
+            std::cerr << "Error while reading DATA packet!" << std::endl;
             return false;
         }
 
+        this->file.put(c);
         std::cout << c;
     }
     std::cout << "----------------------------------\n";
 
-    if(this->resp_len - 4 < this->block_size) {
-        std::cout << "LAST\n";
-        this->exp_resp = false;
-    }
+    this->exp_resp = this->resp_len - 4 == this->block_size;
+    this->send_type = OPCODE_ACK;
 
+    // create log information
     this->log += "block number " + std::to_string(block_num) + ", ";
     this->log += std::to_string(this->resp_len - 4) + " bytes";
 
-    this->send_type = OPCODE_ACK;
     return true;
 }

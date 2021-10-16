@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <memory>
 #include <sys/socket.h>
+#include <fstream>
 
 #include "tftp_parameters.h"
 
@@ -20,9 +21,12 @@ class Tftp_client
             OPCODE_DATA,
             OPCODE_ACK,
             OPCODE_ERROR,
+            OPCODE_SKIP,
         } opcode_t;
 
     private:
+        std::fstream file;
+
         std::unique_ptr<uint8_t[]> out_buffer;
         std::unique_ptr<uint8_t[]> in_buffer;
         uint64_t out_curr_pos;
@@ -55,12 +59,14 @@ class Tftp_client
 
     private:
         void logging(opcode_t type, bool sending);
+        void cleanup();
 
         bool set_ipv4(Tftp_parameters *params);
         bool set_ipv6(Tftp_parameters *params);
         bool process_address(Tftp_parameters *params);
-
         bool create_socket();
+        bool prepare_file(Tftp_parameters *params);
+
         bool handle_exchange(Tftp_parameters *params);
         bool send_packet();
         int recvfrom_wrapper(struct sockaddr_storage *src_addr, socklen_t *size);

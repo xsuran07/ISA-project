@@ -178,8 +178,8 @@ bool Tftp_parameters::set_address(std::string str)
 
 bool Tftp_parameters::set_filename(std::string str)
 {
-    if(str.empty() || str.at(0) != '/') {
-        std::cerr << "Invalid form of argument for option -d (HINT absolute path)!" << std::endl;
+    if(str.empty() || str.at(0) != '/' || str.at(str.size() - 1) == '/') {
+        std::cerr << "Invalid form of argument for option -d (HINT absolute path/filename)!" << std::endl;
         return false;
     }
 

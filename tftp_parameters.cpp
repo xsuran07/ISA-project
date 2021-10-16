@@ -4,7 +4,6 @@
  * @brief Implementation of tftp_parameters class.
  */
 
-
 #include <iostream>
 #include <regex>
 #include <arpa/inet.h>
@@ -29,7 +28,7 @@ void Tftp_parameters::print_params()
 
 // STATIC METHODS
 
-long Tftp_parameters::convert_to_number(std::string str, std::string option)
+long Tftp_parameters::convert_to_number(std::string str, std::string option = "")
 {
     char *end;
     long res = std::strtol(str.c_str(), &end, 10);

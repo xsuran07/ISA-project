@@ -40,6 +40,9 @@ class Tftp_client
         uint16_t block_num;
         opcode_t exp_type;
         opcode_t send_type;
+        bool binary;
+        bool active_cr;
+        std::string bytes_left;
 
         struct sockaddr_storage addr;
         size_t addr_len;
@@ -61,6 +64,7 @@ class Tftp_client
         void logging(opcode_t type, bool sending);
         void cleanup();
 
+        void init(Tftp_parameters *params);
         bool set_ipv4(Tftp_parameters *params);
         bool set_ipv6(Tftp_parameters *params);
         bool process_address(Tftp_parameters *params);
@@ -81,11 +85,13 @@ class Tftp_client
         bool fill_DATA();
         bool fill_ACK();
 
+        bool write_two_bytes(uint8_t c1, uint8_t c2);
         bool write_byte(uint8_t b);
         bool write_word(uint16_t w);
         bool write_string(const char *str);
 
         bool read_type(uint16_t &res);
+        bool read_cr(uint8_t &res);
         bool read_byte(uint8_t &res);
         bool read_word(uint16_t &res);
         bool read_string(std::string &res);

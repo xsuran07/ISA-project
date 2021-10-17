@@ -86,12 +86,12 @@ void Tftp_client::logging(opcode_t type, bool sending)
         ipv6_tostring((struct sockaddr_in6 *) &this->addr, str);
     }
 
+    print_timestamp();
     std::cout << str;
     if(!this->log.empty()) {
         std::cout << " - " << this->log;
     }
 
-    print_timestamp();
     std::cout << std::endl;
 }
 
@@ -369,14 +369,21 @@ bool Tftp_client::prepare_file(Tftp_parameters *params)
     return true;
 }
 
-bool Tftp_client::communicate(Tftp_parameters *params)
+void Tftp_client::init(Tftp_parameters *params)
 {
-    bool ok = true;
+    this->binary = params->get_mode() == Tftp_parameters::BINARY;
     this->send_type = (params->get_req_type() == Tftp_parameters::READ) ? OPCODE_RRQ : OPCODE_WRQ;
     this->first = true;
     this->exp_resp = true;
     this->last = false;
+    this->bytes_left.clear();
+}
 
+bool Tftp_client::communicate(Tftp_parameters *params)
+{
+    bool ok = true;
+
+    init(params);
 
     // process and store address of the server
     if(!process_address(params)) {
@@ -394,10 +401,12 @@ bool Tftp_client::communicate(Tftp_parameters *params)
         return false;
     }
 
+    // communicate with server till error or successful transfer
     do {
         ok = handle_exchange(params);
     } while(ok && !this->last);
 
+    // report result of transfer
     print_timestamp();
     if(ok) {
         std::cout << "Transfer completed without errors." << std::endl;
@@ -443,12 +452,45 @@ bool Tftp_client::send_packet()
     return true;
 }
 
+bool Tftp_client::write_two_bytes(uint8_t c1, uint8_t c2)
+{
+    if(this->out_curr_pos + 1 >= this->size) {
+        return false;
+    }
+
+    this->out_buffer[this->out_curr_pos] = c1;
+    this->out_curr_pos++;
+
+    // c2 byte fits into current data block
+    if(this->out_curr_pos < this->block_size) {
+        this->out_buffer[this->out_curr_pos] = c2;
+        this->out_curr_pos++;
+    // c2 byte will be part of next data block
+    } else {
+        this->bytes_left.push_back(c2);
+    }
+
+    this->active_cr = c2 == '\r';
+    return true;
+}
+
 bool Tftp_client::write_byte(uint8_t b)
 {
     if(this->out_curr_pos >= this->size) {
         return false;
     }
 
+    if(!this->binary) {
+        // netascii line ending
+        if(!this->active_cr && b == '\n') {
+            return write_two_bytes('\r', '\n');
+        // CR has to be followed by \0
+        } else if(this->active_cr && b != '\n') {
+            return write_two_bytes('\0', b);
+        }
+    }
+
+    this->active_cr = b == '\r';
     this->out_buffer[this->out_curr_pos] = b;
     this->out_curr_pos++;
     return true;
@@ -489,21 +531,23 @@ bool Tftp_client::write_string(const char *str)
 
 bool Tftp_client::fill_RQ(std::string filename, opcode_t opcode)
 {
+    std::string mode = (this->binary)? "octet" : "netascii";
     this->out_curr_pos = 0; // reinitialize
+    this->active_cr = false;
 
     do {
-        //OPCODE
+        // OPCODE
         if(!write_word(opcode)) {
             break;
         }
 
-        //FILENAME
+        // FILENAME
         if(!write_string(filename.c_str())) {
             break;
         }
 
-        //MODE
-        if(!write_string("octet")) {
+        // MODE
+        if(!write_string(mode.c_str())) {
             break;
         }
 
@@ -560,6 +604,7 @@ bool Tftp_client::fill_DATA()
 
     this->out_curr_pos = 0; // reinitialize
     this->exp_type = OPCODE_ACK;
+    this->active_cr = false;
 
     do {
         if(!write_word(OPCODE_DATA)) {
@@ -577,6 +622,14 @@ bool Tftp_client::fill_DATA()
         std::cerr << "Error while creating DATA packet!" << std::endl;
         return false;
     }
+
+    // write bytes which were processed but didn't fit last block
+    for(size_t i = 0; i < this->bytes_left.size(); i++) {
+        if(!write_byte(this->bytes_left[i])) {
+            return false;
+        }
+    }
+    this->bytes_left.clear();
 
     // try to fill another block of data
     while(this->out_curr_pos - 4 <= this->block_size) {
@@ -604,10 +657,40 @@ bool Tftp_client::read_type(uint16_t &res)
     return read_word(res);
 }
 
+bool Tftp_client::read_cr(uint8_t &res)
+{
+    switch(this->in_buffer[this->in_curr_pos]) {
+    case '\n':
+        res = '\n';
+        break;
+    case '\0':
+        res = '\r';
+        break;
+    default:
+        return false;
+    }
+
+    this->active_cr = false;
+    this->in_curr_pos++;
+    return true;
+}
+
 bool Tftp_client::read_byte(uint8_t &res)
 {
     if(this->in_curr_pos >= this->resp_len) {
         return false;
+    }
+
+    if(this->active_cr) {
+        std::cout << "fsdf\n";
+        return read_cr(res);
+    }
+
+    // netascii mode - current byte is CR
+    if(!this->binary && this->in_buffer[this->in_curr_pos] == '\r') {
+        this->active_cr = true;
+        this->in_curr_pos++;
+        return true;
     }
 
     res = this->in_buffer[this->in_curr_pos];
@@ -701,7 +784,6 @@ bool Tftp_client::parse_ACK()
         return true;
     }
 
-
     this->send_type = OPCODE_DATA;
     this->block_num++;
     return true;
@@ -711,6 +793,7 @@ bool Tftp_client::parse_DATA()
 {
     uint16_t block_num;
     uint8_t c;
+    this->active_cr = false;
 
     if(this->exp_type != OPCODE_DATA) {
         return false;
@@ -721,8 +804,14 @@ bool Tftp_client::parse_DATA()
         return false;
     }
 
-
     std::cout << "TFTP DATA - block: " << block_num << std::endl;
+
+    // CR byte from previous data block
+    if(!this->bytes_left.empty()) {
+
+        this->active_cr = true;
+    }
+    this->bytes_left.clear();
 
     std::cout << "----------------------------------\n";
     // try to read and store recieved data block
@@ -732,13 +821,26 @@ bool Tftp_client::parse_DATA()
             return false;
         }
 
-        this->file.put(c);
-        std::cout << c;
+        if(!this->active_cr) {
+            this->file.put(c);
+            std::cout << c;
+        }
     }
     std::cout << "----------------------------------\n";
 
     this->exp_resp = this->resp_len - 4 == this->block_size;
     this->send_type = OPCODE_ACK;
+
+    // second byte of CR sequence didn't fit in this block
+    if(this->active_cr) {
+        // invalid message in netascii - CR sequence
+        if(!this->exp_resp) {
+            std::cerr << "Error! CR sequence in last block wasn't end properly!" << std::endl;
+            return false;
+        }
+
+        this->bytes_left.push_back('\r');
+    }
 
     // create log information
     this->log += "block number " + std::to_string(block_num) + ", ";

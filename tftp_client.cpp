@@ -1,3 +1,9 @@
+/*
+ * @author Jakub Šuráň (xsuran07)
+ * @file tftp_client.cpp
+ * @brief Implementation of tftp_client class.
+ */
+
 #include <iostream>
 #include <sys/types.h>
 #include <netdb.h>
@@ -91,6 +97,9 @@ bool Tftp_client::communicate(Tftp_parameters *params)
         return false;
     }
 
+    // set extension options values
+    set_options(params);
+
     // communicate with server till error or successful transfer
     do {
         ok = handle_exchange(params);
@@ -124,12 +133,16 @@ void Tftp_client::logging(opcode_t type, bool sending)
             break;
         case OPCODE_DATA:
             str += "DATA ";
+            this->log += "(total " + std::to_string(this->cur_size) + "/" + std::to_string(this->tsize) + ")";
             break;
         case OPCODE_RRQ:
             str += "RRQ ";
             break;
         case OPCODE_WRQ:
             str += "WRQ ";
+            break;
+        case OPCODE_OACK:
+            str += "OACK ";
             break;
         default:
             str += "ERROR ";
@@ -170,6 +183,9 @@ void Tftp_client::init(Tftp_parameters *params)
     this->exp_resp = true;
     this->last = false;
     this->bytes_left.clear();
+    this->block_size = 512;
+    this->cur_size = 0;
+    this->tsize = 0;
 }
 
 bool Tftp_client::set_ipv4(Tftp_parameters *params)
@@ -251,6 +267,30 @@ bool Tftp_client::prepare_file(Tftp_parameters *params)
     return true;
 }
 
+void Tftp_client::get_filesize()
+{
+    this->file.seekg(0, this->file.end);
+    this->tsize = this->file.tellg();
+    this->file.seekg(0, this->file.beg);
+    std::cout << "fds: " << this->tsize << "\n";
+}
+
+void Tftp_client::set_options(Tftp_parameters *params)
+{
+    // get value for option tsize value
+    get_filesize();
+
+    // if requested, set option timeout value
+    if(params->get_timeout() > 0) {
+        this->options["timeout"] = std::to_string(params->get_timeout());
+    }
+
+    // set option blksize value for nondefault vaules
+    if(params->get_size() != 512) {
+        this->options["blksize"] = std::to_string(params->get_size());
+    }
+}
+
 // PRIVATE INSTANCE METHODS TO HADNLE COMMUNICATION ITSELF
 
 bool Tftp_client::handle_exchange(Tftp_parameters *params)
@@ -325,6 +365,10 @@ bool Tftp_client::handle_exchange(Tftp_parameters *params)
         break;
     case OPCODE_ACK:
         ok = parse_ACK();
+        break;
+    case OPCODE_OACK:
+        std::cout << "OACK\n";
+        ok = parse_OACK();
         break;
     default:
         std::cerr << "Got unknown type of tftp packet!" << std::endl;
@@ -544,6 +588,23 @@ bool Tftp_client::write_string(const char *str)
     return write_byte('\0');
 }
 
+bool Tftp_client::write_options()
+{
+    for(auto it = this->options.begin(); it != this->options.end(); ++it) {
+        if(!write_string(it->first.c_str())) {
+            std::cerr << "Error while writing option name - " << it->first << std::endl;
+            return false;
+        }
+
+        if(!write_string(it->second.c_str())) {
+            std::cerr << "Error while writing option value - " << it->second << std::endl;
+            return false;
+        }
+    }
+
+    return true;
+}
+
 // PRIVATE INSTANCE METHODS FOR FILLING TFPT PACKETS TO BE SENT
 
 bool Tftp_client::fill_RQ(std::string filename, opcode_t opcode)
@@ -551,6 +612,7 @@ bool Tftp_client::fill_RQ(std::string filename, opcode_t opcode)
     std::string mode = (this->binary)? "octet" : "netascii";
     this->out_curr_pos = 0; // reinitialize
     this->active_cr = false;
+    this->options["tsize"] = std::to_string(this->tsize);
 
     do {
         // OPCODE
@@ -569,7 +631,8 @@ bool Tftp_client::fill_RQ(std::string filename, opcode_t opcode)
         }
 
         std::cout << "PACKET filled!" << std::endl;
-        return true;
+        // OPTIONS
+        return write_options();
     } while(0);
 
     std::cerr << "Error while creating RRQ/WRQ packet" << std::endl;
@@ -649,7 +712,7 @@ bool Tftp_client::fill_DATA()
     this->bytes_left.clear();
 
     // try to fill another block of data
-    while(this->out_curr_pos - 4 <= this->block_size) {
+    while(this->out_curr_pos - 4 < this->block_size) {
         c = this->file.get();
 
         // end of file reached => last block
@@ -664,7 +727,34 @@ bool Tftp_client::fill_DATA()
         }
     }
 
+    this->cur_size += this->out_curr_pos - 4;
     return true;
+}
+
+bool Tftp_client::fill_ERROR()
+{
+    std::string msg = "";
+
+    do {
+        if(!write_word(OPCODE_ERROR)) {
+            break;
+        }
+
+        if(!write_word(this->error_code)) {
+            break;
+        }
+
+        if(!write_string(msg.c_str())) {
+            break;
+        }
+
+        this->log += "code: " + std::to_string(this->error_code) + " ,msg: " + msg;
+        this->exp_resp = false;
+       return true;
+    } while(0);
+
+    std::cerr << "Error while creating ERROR packet!" << std::endl;
+    return false;
 }
 
 // PRIVATE INSTANCE METHODS FOR ACCESSING DATA IN RECIEVED PACKETS
@@ -812,9 +902,13 @@ bool Tftp_client::parse_ACK()
 
 bool Tftp_client::parse_DATA()
 {
+    uint64_t data_size = this->resp_len - 4;
     uint16_t block_num;
     uint8_t c;
+    this->cur_size += data_size;
     this->active_cr = false;
+    this->exp_resp = data_size == this->block_size;
+    this->send_type = OPCODE_ACK;
 
     if(this->exp_type != OPCODE_DATA) {
         return false;
@@ -849,9 +943,6 @@ bool Tftp_client::parse_DATA()
     }
     std::cout << "----------------------------------\n";
 
-    this->exp_resp = this->resp_len - 4 == this->block_size;
-    this->send_type = OPCODE_ACK;
-
     // second byte of CR sequence didn't fit in this block
     if(this->active_cr) {
         // invalid message in netascii - CR sequence
@@ -865,7 +956,41 @@ bool Tftp_client::parse_DATA()
 
     // create log information
     this->log += "block number " + std::to_string(block_num) + ", ";
-    this->log += std::to_string(this->resp_len - 4) + " bytes";
+    this->log += std::to_string(data_size) + " bytes ";
+
+    return true;
+}
+
+bool Tftp_client::parse_OACK()
+{
+    std::string option;
+    std::string value;
+
+    // for read request OACK is followed by ACK num 0
+    if(this->send_type == OPCODE_RRQ) {
+        this->send_type = OPCODE_ACK;
+        this->block_num = 0;
+    // for write request OACK is followed by DATA num 1
+    } else {
+        this->send_type = OPCODE_DATA;
+        this->block_num = 1;
+    }
+
+    while(this->in_curr_pos < this->resp_len) {
+        if(!read_string(option)) {
+            return false;
+        }
+
+        if(!read_string(value)) {
+            return false;
+        }
+
+        if(option == "tsize") {
+            this->tsize = std::stoul(value);
+        }
+
+        std::cout << "Option: " << option << " value: " << value << std::endl;
+    }
 
     return true;
 }

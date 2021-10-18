@@ -12,6 +12,7 @@
 #include <memory>
 #include <sys/socket.h>
 #include <fstream>
+#include <map>
 
 #include "tftp_parameters.h"
 
@@ -36,8 +37,21 @@ class Tftp_client
             OPCODE_DATA,
             OPCODE_ACK,
             OPCODE_ERROR,
+            OPCODE_OACK,
             OPCODE_SKIP,
         } opcode_t;
+
+    typedef enum {
+        ERR_CODE_NOT_DEF,
+        ERR_CODE_NOT_FOUND,
+        ERR_CODE_ACCESS_VIOLATION,
+        ERR_CODE_DISK_FULL,
+        ERR_CODE_ILEGAL_OP,
+        ERR_CODE_UNKNOWN_ID,
+        ERR_CODE_FILE_AXISTS,
+        ERR_CODE_NO_SUCH_USER,
+        ERR_CODE_PROBLEMATIC_OPTION,
+    } err_code_t;
 
     private:
         std::fstream file;
@@ -50,6 +64,7 @@ class Tftp_client
         uint64_t resp_len;
         std::string log;
 
+        std::map<std::string, std::string> options;
         bool last;
         bool exp_resp;
         uint64_t block_size;
@@ -59,6 +74,9 @@ class Tftp_client
         bool binary;
         bool active_cr;
         std::string bytes_left;
+        uint64_t cur_size;
+        uint64_t tsize;
+        err_code_t error_code;
 
         struct sockaddr_storage addr;
         size_t addr_len;
@@ -169,6 +187,10 @@ class Tftp_client
          */
         bool prepare_file(Tftp_parameters *params);
 
+        void get_filesize();
+
+        void set_options(Tftp_parameters *params);
+
 
         bool handle_exchange(Tftp_parameters *params);
         bool send_packet();
@@ -215,10 +237,13 @@ class Tftp_client
          */
         bool fill_ACK();
 
+        bool fill_ERROR();
+
         bool write_two_bytes(uint8_t c1, uint8_t c2);
         bool write_byte(uint8_t b);
         bool write_word(uint16_t w);
         bool write_string(const char *str);
+        bool write_options();
 
         bool read_type(uint16_t &res);
         bool read_cr(uint8_t &res);
@@ -247,6 +272,8 @@ class Tftp_client
          * @returns true in case of success, false otherwise.
          */
         bool parse_DATA();
+
+        bool parse_OACK();
 };
 
 #endif

@@ -12,7 +12,9 @@
 
 #define TIMOUT 5
 
-static void print_timestamp()
+// STATIC METHODS
+
+void Tftp_client::print_timestamp()
 {
     auto t = std::chrono::system_clock::now();
 
@@ -26,11 +28,12 @@ static void print_timestamp()
     std::cout << std::setfill('0') << std::setw(3) << ms.count() << "] ";
 }
 
-static void ipv4_tostring(struct sockaddr_in *addr, std::string &s)
+void Tftp_client::ipv4_tostring(struct sockaddr_in *addr, std::string &s)
 {
     char buf[INET_ADDRSTRLEN];
     uint16_t port;
 
+    // get string representation of ipv4 address + port
     inet_ntop(AF_INET, &addr->sin_addr.s_addr, buf, INET_ADDRSTRLEN);
     port = htons(addr->sin_port);
 
@@ -39,11 +42,12 @@ static void ipv4_tostring(struct sockaddr_in *addr, std::string &s)
     s += std::to_string(port);
 }
 
-static void ipv6_tostring(struct sockaddr_in6 *addr, std::string &s)
+void Tftp_client::ipv6_tostring(struct sockaddr_in6 *addr, std::string &s)
 {
     char buf[INET6_ADDRSTRLEN];
     uint16_t port;
 
+    // get string representation of ipv6 address + port
     inet_ntop(AF_INET6, &addr->sin6_addr.s6_addr, buf, INET6_ADDRSTRLEN);
     port = htons(addr->sin6_port);
 
@@ -51,6 +55,61 @@ static void ipv6_tostring(struct sockaddr_in6 *addr, std::string &s)
     s += ":";
     s += std::to_string(port);
 }
+
+// PUBLIC INSTANCE METHODS
+
+// contstructor
+Tftp_client::Tftp_client() : out_buffer(new uint8_t[MAX_SIZE]), in_buffer(new uint8_t[MAX_SIZE])
+{
+    this->size = MAX_SIZE;
+    this->send_type = OPCODE_INVALID;
+
+    memset(static_cast<void *> (this->out_buffer.get()), 0, MAX_SIZE);
+    memset(static_cast<void *> (this->in_buffer.get()), 0, MAX_SIZE);
+}
+
+// handles communication with server
+bool Tftp_client::communicate(Tftp_parameters *params)
+{
+    bool ok = true;
+
+    init(params);
+
+    // process and store address of the server
+    if(!process_address(params)) {
+        return false;
+    }
+
+    // open and configure socket for communication
+    if(!create_socket()) {
+        return false;
+    }
+
+    // try to open specified file
+    if(!prepare_file(params)) {
+        close(this->sock);
+        return false;
+    }
+
+    // communicate with server till error or successful transfer
+    do {
+        ok = handle_exchange(params);
+    } while(ok && !this->last);
+
+    // report result of transfer
+    print_timestamp();
+    if(ok) {
+        std::cout << "Transfer completed without errors." << std::endl;
+    } else {
+        std::cout << "Transfer didn't complete sucessfully!" << std::endl;
+    }
+
+    cleanup();
+    return true;
+}
+
+// GENERAL PRIVATE INSTANCE METHODS
+
 void Tftp_client::logging(opcode_t type, bool sending)
 {
     std::string str;
@@ -101,6 +160,18 @@ void Tftp_client::cleanup()
     this->file.close();
 }
 
+// PRIVATE INSTANCE METHODS FOR NECCESSARY PREPARATION BEFORE COMMUNICATION
+
+void Tftp_client::init(Tftp_parameters *params)
+{
+    this->binary = params->get_mode() == Tftp_parameters::BINARY;
+    this->send_type = (params->get_req_type() == Tftp_parameters::READ) ? OPCODE_RRQ : OPCODE_WRQ;
+    this->first = true;
+    this->exp_resp = true;
+    this->last = false;
+    this->bytes_left.clear();
+}
+
 bool Tftp_client::set_ipv4(Tftp_parameters *params)
 {
     struct sockaddr_in *addr = (struct sockaddr_in *) &this->addr;
@@ -127,14 +198,60 @@ bool Tftp_client::set_ipv6(Tftp_parameters *params)
     return true;
 }
 
-Tftp_client::Tftp_client() : out_buffer(new uint8_t[MAX_SIZE]), in_buffer(new uint8_t[MAX_SIZE])
+bool Tftp_client::process_address(Tftp_parameters *params)
 {
-    this->size = MAX_SIZE;
-    this->send_type = OPCODE_INVALID;
+    this->addr.ss_family = params->get_addr_family();
 
-    memset(static_cast<void *> (this->out_buffer.get()), 0, MAX_SIZE);
-    memset(static_cast<void *> (this->in_buffer.get()), 0, MAX_SIZE);
+    if(this->addr.ss_family == AF_INET) {
+        return set_ipv4(params);
+    } else {
+        return set_ipv6(params);
+    }
 }
+
+bool Tftp_client::create_socket()
+{
+    struct timeval timout = {TIMOUT, 0};
+
+    this->sock = socket(this->addr.ss_family, SOCK_DGRAM, 0);
+
+    if(sock == -1) {
+        std::cerr << "socket() failed!" << std::endl;
+        return false;
+    }
+
+    // set timout for recieving
+    if(setsockopt(this->sock, SOL_SOCKET, SO_RCVTIMEO, &timout, sizeof(struct timeval)) < 0) {
+        close(this->sock);
+        return false;
+    }
+
+    return true;
+}
+
+bool Tftp_client::prepare_file(Tftp_parameters *params)
+{
+    std::vector<std::string> parts;
+    Tftp_parameters::split_string(params->get_filename(), "/", parts);
+    std::string name_of_file = parts[parts.size() - 1];
+    std::ios::openmode mode = std::fstream::binary;
+
+    if(params->get_req_type() == Tftp_parameters::READ) {
+        mode |= std::fstream::out;
+    } else {
+        mode |= std::fstream::in;
+    }
+
+    this->file.open(name_of_file, mode);
+    if(this->file.fail()) {
+        std::cerr << "Opening of file \"" << name_of_file << "\"failed!" << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+// PRIVATE INSTANCE METHODS TO HADNLE COMMUNICATION ITSELF
 
 bool Tftp_client::handle_exchange(Tftp_parameters *params)
 {
@@ -194,10 +311,7 @@ bool Tftp_client::handle_exchange(Tftp_parameters *params)
         return false;
     }
 
-    std::cout << "LEN: " << this->resp_len << std::endl;
-
     if(!read_type(resp_type)) {
-        std::cout << "ssdfs\n";
         return false;
     }
 
@@ -224,7 +338,6 @@ bool Tftp_client::handle_exchange(Tftp_parameters *params)
     return ok;
 }
 
-
 bool Tftp_client::check_address_ipv4(struct sockaddr_in *addr)
 {
     char buf[INET_ADDRSTRLEN];
@@ -239,10 +352,12 @@ bool Tftp_client::check_address_ipv4(struct sockaddr_in *addr)
         return false;
     }
 
+    // in case of first response, get server's TID    
     if(this->first) {
         this->first = false;
         origin->sin_port = addr->sin_port;
         return true;
+    // check correctness of server's TID
     } else {
         return addr->sin_port == origin->sin_port;
     }
@@ -263,10 +378,12 @@ bool Tftp_client::check_address_ipv6(struct sockaddr_in6 *addr)
         }
     }
     
+    // in case of first response, get server's TID    
     if(this->first) {
         this->first = false;
         origin->sin6_port = addr->sin6_port;
         return true;
+    // check correctness of server's TID
     } else {
         return addr->sin6_port == origin->sin6_port;
     }
@@ -327,110 +444,6 @@ bool Tftp_client::recv_packet()
     return true;
 }
 
-bool Tftp_client::create_socket()
-{
-    struct timeval timout = {TIMOUT, 0};
-
-    this->sock = socket(this->addr.ss_family, SOCK_DGRAM, 0);
-
-    if(sock == -1) {
-        std::cerr << "socket() failed!" << std::endl;
-        return false;
-    }
-
-    // set timout for recieving
-    if(setsockopt(this->sock, SOL_SOCKET, SO_RCVTIMEO, &timout, sizeof(struct timeval)) < 0) {
-        close(this->sock);
-        return false;
-    }
-
-    return true;
-}
-
-bool Tftp_client::prepare_file(Tftp_parameters *params)
-{
-    std::vector<std::string> parts;
-    Tftp_parameters::split_string(params->get_filename(), "/", parts);
-    std::string name_of_file = parts[parts.size() - 1];
-    std::ios::openmode mode = std::fstream::binary;
-
-    if(params->get_req_type() == Tftp_parameters::READ) {
-        mode |= std::fstream::out;
-    } else {
-        mode |= std::fstream::in;
-    }
-
-    this->file.open(name_of_file, mode);
-    if(this->file.fail()) {
-        std::cerr << "Opening of file \"" << name_of_file << "\"failed!" << std::endl;
-        return false;
-    }
-
-    return true;
-}
-
-void Tftp_client::init(Tftp_parameters *params)
-{
-    this->binary = params->get_mode() == Tftp_parameters::BINARY;
-    this->send_type = (params->get_req_type() == Tftp_parameters::READ) ? OPCODE_RRQ : OPCODE_WRQ;
-    this->first = true;
-    this->exp_resp = true;
-    this->last = false;
-    this->bytes_left.clear();
-}
-
-bool Tftp_client::communicate(Tftp_parameters *params)
-{
-    bool ok = true;
-
-    init(params);
-
-    // process and store address of the server
-    if(!process_address(params)) {
-        return false;
-    }
-
-    // open and configure socket for communication
-    if(!create_socket()) {
-        return false;
-    }
-
-    // try to open specified file
-    if(!prepare_file(params)) {
-        close(this->sock);
-        return false;
-    }
-
-    // communicate with server till error or successful transfer
-    do {
-        ok = handle_exchange(params);
-    } while(ok && !this->last);
-
-    // report result of transfer
-    print_timestamp();
-    if(ok) {
-        std::cout << "Transfer completed without errors." << std::endl;
-    } else {
-        std::cout << "Transfer didn't complete sucessfully!" << std::endl;
-    }
-
-    cleanup();
-    return true;
-}
-
-
-
-bool Tftp_client::process_address(Tftp_parameters *params)
-{
-    this->addr.ss_family = params->get_addr_family();
-
-    if(this->addr.ss_family == AF_INET) {
-        return set_ipv4(params);
-    } else {
-        return set_ipv6(params);
-    }
-}
-
 bool Tftp_client::send_packet()
 {
     ssize_t ret;
@@ -451,6 +464,8 @@ bool Tftp_client::send_packet()
 
     return true;
 }
+
+// PRIVATE INSTANCE METHODS TO SIMPLIFY FILLING OF DATA INTO PACKETS
 
 bool Tftp_client::write_two_bytes(uint8_t c1, uint8_t c2)
 {
@@ -528,6 +543,8 @@ bool Tftp_client::write_string(const char *str)
 
     return write_byte('\0');
 }
+
+// PRIVATE INSTANCE METHODS FOR FILLING TFPT PACKETS TO BE SENT
 
 bool Tftp_client::fill_RQ(std::string filename, opcode_t opcode)
 {
@@ -650,6 +667,8 @@ bool Tftp_client::fill_DATA()
     return true;
 }
 
+// PRIVATE INSTANCE METHODS FOR ACCESSING DATA IN RECIEVED PACKETS
+
 bool Tftp_client::read_type(uint16_t &res)
 {
     this->in_curr_pos = 0;
@@ -731,6 +750,8 @@ bool Tftp_client::read_string(std::string &res)
 
     return true;
 }
+
+// PRIVATE INSTANCE METHODS FOR PARSING RECIEVED TFTP PACKETS
 
 bool Tftp_client::parse_ERROR()
 {

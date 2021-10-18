@@ -143,7 +143,7 @@ class Tftp_parameters
         void print_params();
 
         /**
-         * @brief Converts given string to number. String should contain
+         * @brief Static method. Converts given string to number. String should contain
          * unsigned number, otherwise conversion will fail.
          * @param str String to convert to number.
          * @param option String to add into error message (optional).
@@ -152,7 +152,7 @@ class Tftp_parameters
         static long convert_to_number(std::string str, std::string option);
 
         /**
-         * @brief Splits given string with specified pattern and stores parts into given
+         * @brief Static method. Splits given string with specified pattern and stores parts into given
          * vector.
          * @param str String to split.
          * @param pattern Pattern to split string with.

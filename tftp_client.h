@@ -77,6 +77,8 @@ class Tftp_client
         uint64_t cur_size;
         uint64_t tsize;
         err_code_t error_code;
+        uint16_t original_TID;
+        bool resend_rq;
 
         struct sockaddr_storage addr;
         size_t addr_len;
@@ -199,6 +201,9 @@ class Tftp_client
         bool check_address(struct sockaddr_storage *addr);
         bool check_address_ipv4(struct sockaddr_in *addr);
         bool check_address_ipv6(struct sockaddr_in6 *addr);
+        void reset_TID();
+        void reset_ipv4_TID();
+        void reset_ipv6_TID();
 
 
         /**
@@ -274,6 +279,10 @@ class Tftp_client
         bool parse_DATA();
 
         bool parse_OACK();
+
+        bool validate_option(std::string option, std::string value);
+
+        bool check_packet_type(uint16_t resp_type);
 };
 
 #endif

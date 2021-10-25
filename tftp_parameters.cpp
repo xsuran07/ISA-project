@@ -130,7 +130,7 @@ bool Tftp_parameters::parse(size_t &curr, std::vector<std::string> options)
     // invalid option
     } else {
         ret = false;
-        std::cerr << "Invalid option \"" << options[curr] << "\"" << std::endl;
+        std::cerr << "Invalid option \"" << options[curr] << "\"! See HELP." << std::endl;
     }
 
     return ret;

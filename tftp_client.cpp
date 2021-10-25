@@ -17,6 +17,7 @@
 #include "tftp_client.h"
 
 #define TIMOUT 5
+//#define DEBUG
 
 // STATIC METHODS
 
@@ -123,7 +124,11 @@ void Tftp_client::logging(opcode_t type, bool sending)
 {
     std::string str;
 
-    str += (sending)? "Sent " : "Recieved ";
+    if(sending && this->resend_rq) {
+        str += "Re-sent ";
+    } else {
+        str += (sending)? "Sent " : "Recieved ";
+    }
 
     switch(type) {
         case OPCODE_SKIP:
@@ -133,7 +138,9 @@ void Tftp_client::logging(opcode_t type, bool sending)
             break;
         case OPCODE_DATA:
             str += "DATA ";
-            this->log += "(total " + std::to_string(this->cur_size) + "/" + std::to_string(this->tsize) + ")";
+            if(this->binary) {
+                this->log += "(total " + std::to_string(this->cur_size) + "/" + std::to_string(this->tsize) + ")";
+            }
             break;
         case OPCODE_RRQ:
             str += "RRQ ";
@@ -156,6 +163,11 @@ void Tftp_client::logging(opcode_t type, bool sending)
         ipv4_tostring((struct sockaddr_in *) &this->addr, str);
     } else {
         ipv6_tostring((struct sockaddr_in6 *) &this->addr, str);
+    }
+
+    if(sending && this->resend_rq) {
+        str += " without options";
+        this->resend_rq = false;
     }
 
     print_timestamp();
@@ -186,6 +198,8 @@ void Tftp_client::init(Tftp_parameters *params)
     this->block_size = 512;
     this->cur_size = 0;
     this->tsize = 0;
+    this->original_TID = htons(params->get_port());
+    this->resend_rq = false;
 }
 
 bool Tftp_client::set_ipv4(Tftp_parameters *params)
@@ -272,13 +286,25 @@ void Tftp_client::get_filesize()
     this->file.seekg(0, this->file.end);
     this->tsize = this->file.tellg();
     this->file.seekg(0, this->file.beg);
+
+#ifdef DEBUG
     std::cout << "fds: " << this->tsize << "\n";
+#endif
 }
 
 void Tftp_client::set_options(Tftp_parameters *params)
 {
-    // get value for option tsize value
-    get_filesize();
+    this->options.clear();
+
+    // get filesize when writing to server
+    if(params->get_req_type() == Tftp_parameters::WRITE) {
+        get_filesize();
+    }
+
+    // for binary mode include tszie extension into packet
+    if(this->binary) {
+        this->options["tsize"] = std::to_string(this->tsize);
+    }
 
     // if requested, set option timeout value
     if(params->get_timeout() > 0) {
@@ -300,7 +326,6 @@ bool Tftp_client::handle_exchange(Tftp_parameters *params)
     uint16_t resp_type;
     this->log.clear();
 
-
     // fill packet to send according to setting
     switch(this->send_type) {
     case OPCODE_SKIP:
@@ -308,19 +333,27 @@ bool Tftp_client::handle_exchange(Tftp_parameters *params)
         break;
     case OPCODE_RRQ:
         ok = fill_RRQ(params->get_filename().c_str());
+#ifdef DEBUG
         std::cout << "RRQ\n";
+#endif
         break;
     case OPCODE_WRQ:
         ok = fill_WRQ(params->get_filename().c_str());
+#ifdef DEBUG
         std::cout << "WRQ\n";
+#endif
         break;
     case OPCODE_DATA:
         ok = fill_DATA();
+#ifdef DEBUG
         std::cout << "DATA\n";
+#endif
         break;
     case OPCODE_ACK:
         ok = fill_ACK();
+#ifdef DEBUG
         std::cout << "ACK\n";
+#endif
         break;
     default:
         std::cerr << "Invalid type of packet!" << std::endl;
@@ -351,14 +384,14 @@ bool Tftp_client::handle_exchange(Tftp_parameters *params)
         return false;
     }
 
-    if(!read_type(resp_type)) {
+    // extract type of recieved packet and check its type
+    if(!read_type(resp_type) || !check_packet_type(resp_type)) {
         return false;
     }
 
     switch(resp_type) {
     case OPCODE_ERROR:
-        parse_ERROR();
-        ok = false;
+        ok = parse_ERROR();
         break;
     case OPCODE_DATA:
         ok = parse_DATA();
@@ -367,7 +400,9 @@ bool Tftp_client::handle_exchange(Tftp_parameters *params)
         ok = parse_ACK();
         break;
     case OPCODE_OACK:
+#ifdef DEBUG
         std::cout << "OACK\n";
+#endif
         ok = parse_OACK();
         break;
     default:
@@ -375,7 +410,7 @@ bool Tftp_client::handle_exchange(Tftp_parameters *params)
         return false;
     }
 
-    if(resp_type == OPCODE_ERROR || ok) {
+    if(ok) {
         this->logging(static_cast<opcode_t> (resp_type), false);
     }
 
@@ -388,9 +423,11 @@ bool Tftp_client::check_address_ipv4(struct sockaddr_in *addr)
     struct sockaddr_in *origin = (struct sockaddr_in *) &this->addr;
     
     inet_ntop(AF_INET, &addr->sin_addr.s_addr, buf, INET_ADDRSTRLEN);
+#ifdef DEBUG
     std::cout << "Address: " << buf << std::endl;
     std::cout << "PORT: " << ntohs(addr->sin_port) << std::endl;
-  
+#endif
+
     if(addr->sin_addr.s_addr != origin->sin_addr.s_addr) {
         std::cerr << "Packet from unexpected source (ipv4)!" << std::endl;
         return false;
@@ -413,8 +450,10 @@ bool Tftp_client::check_address_ipv6(struct sockaddr_in6 *addr)
     struct sockaddr_in6 *origin = (struct sockaddr_in6 *) &this->addr;
 
     inet_ntop(AF_INET, &addr->sin6_addr.s6_addr, buf, INET6_ADDRSTRLEN);
+#ifdef DEBUG
     std::cout << "Address: " << buf << std::endl;
     std::cout << "PORT: " << ntohs(addr->sin6_port) << std::endl;
+#endif
     for(int i = 0; i < 16; i++) {
         if(origin->sin6_addr.s6_addr[i] != addr->sin6_addr.s6_addr[i]) {
             std::cerr << "Packet from unexpected source (ipv6)!" << std::endl;
@@ -439,6 +478,29 @@ bool Tftp_client::check_address(struct sockaddr_storage *addr)
         return check_address_ipv4((struct sockaddr_in *) addr);
     } else {
         return check_address_ipv6((struct sockaddr_in6 *) addr);
+    }
+}
+
+void Tftp_client::reset_ipv4_TID()
+{
+    struct sockaddr_in *addr = (struct sockaddr_in *) &this->addr;
+
+    addr->sin_port = this->original_TID;
+}
+
+void Tftp_client::reset_ipv6_TID()
+{
+    struct sockaddr_in6 *addr = (struct sockaddr_in6 *) &this->addr;
+
+    addr->sin6_port = this->original_TID;
+}
+
+void Tftp_client::reset_TID()
+{
+    if(this->addr.ss_family == AF_INET) {
+        reset_ipv4_TID();
+    } else {
+        reset_ipv6_TID();
     }
 }
 
@@ -590,7 +652,18 @@ bool Tftp_client::write_string(const char *str)
 
 bool Tftp_client::write_options()
 {
+    if(this->options.empty()) {
+        return true;
+    }
+
+    log += ", options:";
+
+    exp_type = OPCODE_OACK;
+
     for(auto it = this->options.begin(); it != this->options.end(); ++it) {
+        log += (it == this->options.begin())? " " : ", ";
+        log += it->first + "(" + it->second + ")";
+
         if(!write_string(it->first.c_str())) {
             std::cerr << "Error while writing option name - " << it->first << std::endl;
             return false;
@@ -612,7 +685,6 @@ bool Tftp_client::fill_RQ(std::string filename, opcode_t opcode)
     std::string mode = (this->binary)? "octet" : "netascii";
     this->out_curr_pos = 0; // reinitialize
     this->active_cr = false;
-    this->options["tsize"] = std::to_string(this->tsize);
 
     do {
         // OPCODE
@@ -630,7 +702,12 @@ bool Tftp_client::fill_RQ(std::string filename, opcode_t opcode)
             break;
         }
 
+#ifdef DEBUG
         std::cout << "PACKET filled!" << std::endl;
+#endif
+
+        log += "file: " + filename;
+
         // OPTIONS
         return write_options();
     } while(0);
@@ -669,6 +746,7 @@ bool Tftp_client::fill_ACK()
             break;
         }
 
+        this->log += "block number " + std::to_string(block_num);
         this->block_num++;
         return true;
     } while(0);
@@ -791,7 +869,6 @@ bool Tftp_client::read_byte(uint8_t &res)
     }
 
     if(this->active_cr) {
-        std::cout << "fsdf\n";
         return read_cr(res);
     }
 
@@ -847,6 +924,7 @@ bool Tftp_client::parse_ERROR()
 {
     uint16_t err_code;
     std::string err_msg;
+    this->last = true;
 
     do {
         if(!read_word(err_code)) {
@@ -863,6 +941,14 @@ bool Tftp_client::parse_ERROR()
         }
 
         this->log += "code: " + std::to_string(err_code) + ", msg: " + err_msg;
+
+        if(this->exp_type == OPCODE_OACK && err_code == ERR_CODE_PROBLEMATIC_OPTION) {
+            this->options.clear();
+            this->last = false;
+            this->first = true;
+            this->resend_rq = true;
+            reset_TID();
+        }
         return true;
     } while(0);
 
@@ -873,10 +959,6 @@ bool Tftp_client::parse_ERROR()
 bool Tftp_client::parse_ACK()
 {
     uint16_t block_num;
-
-    if(this->exp_type != OPCODE_ACK) {
-        return false;
-    }
 
     if(!read_word(block_num)) {
         std::cerr << "Error while parsing ACK packet!" << std::endl;
@@ -910,16 +992,14 @@ bool Tftp_client::parse_DATA()
     this->exp_resp = data_size == this->block_size;
     this->send_type = OPCODE_ACK;
 
-    if(this->exp_type != OPCODE_DATA) {
-        return false;
-    }
-
     if(!read_word(block_num)) {
         std::cerr << "Error while reading block number from DATA packet!" << std::endl;
         return false;
     }
 
+#ifdef DEBUG
     std::cout << "TFTP DATA - block: " << block_num << std::endl;
+#endif
 
     // CR byte from previous data block
     if(!this->bytes_left.empty()) {
@@ -928,7 +1008,9 @@ bool Tftp_client::parse_DATA()
     }
     this->bytes_left.clear();
 
+#ifdef DEBUG
     std::cout << "----------------------------------\n";
+#endif
     // try to read and store recieved data block
     while(this->in_curr_pos < this->resp_len) {
         if(!read_byte(c)) {
@@ -938,10 +1020,14 @@ bool Tftp_client::parse_DATA()
 
         if(!this->active_cr) {
             this->file.put(c);
+#ifdef DEBUG
             std::cout << c;
+#endif
         }
     }
+#ifdef DEBUG
     std::cout << "----------------------------------\n";
+#endif
 
     // second byte of CR sequence didn't fit in this block
     if(this->active_cr) {
@@ -985,12 +1071,84 @@ bool Tftp_client::parse_OACK()
             return false;
         }
 
-        if(option == "tsize") {
-            this->tsize = std::stoul(value);
+        if(!validate_option(option, value)) {
+            return false;
         }
 
+#ifdef DEBUG
         std::cout << "Option: " << option << " value: " << value << std::endl;
+#endif
+    }
+
+    for(auto it = this->options.begin(); it != this->options.end(); it++) {
+        log += (it == this->options.begin())? "" : ", ";
+        log += it->first;
+        log += (it->second.empty())? " (confirmed)" : " (not confirmed)"; 
     }
 
     return true;
+}
+
+bool Tftp_client::validate_option(std::string option, std::string value)
+{
+    bool ret = true;
+
+    if(this->options.find(option) == this->options.end()) {
+        return false;
+    }
+
+    if(option == "tsize") {
+        this->tsize = std::stoul(value);
+        ret = this->binary; // valid only for binary mode
+    } else if(option == "timeout") {
+        ret = this->options[option] == value; // timeout value must match
+    } else if(option == "blksize") {
+        this->block_size = std::stoul(value);
+        ret = this->block_size <= std::stoul(this->options[option]); // must by less than or equel than proposed
+    }
+
+    this->options[option].clear();
+    return ret;
+}
+
+bool Tftp_client::check_packet_type(uint16_t resp_type)
+{
+    std::vector<std::string> types({"none", "RRQ", "WRQ", "DATA", "ACK", "ERROR"});
+
+    // error packet automaticaly matches everything
+    if(resp_type == OPCODE_ERROR) {
+        return true;
+    }
+
+    // recieved packet type match expected type
+    if(resp_type == this->exp_type) {
+        return true;
+    }
+
+    if(this->exp_type == OPCODE_OACK) {
+        // server ignores options and immediately sends data on RRQ
+        if(this->send_type == OPCODE_RRQ && resp_type == OPCODE_DATA) {
+            return true;
+        // server ignores options and immediately sends ACK on WRQ
+        } else if(this->send_type == OPCODE_WRQ && resp_type == OPCODE_ACK) {
+            return true;
+        }
+
+    }
+
+    print_timestamp();
+    std::cout << "Recieved wrong type of packet! Expected " << types[this->exp_type] <<
+        ", got " << types[resp_type];
+
+    // send error packet before termination
+    do {
+        this->error_code = ERR_CODE_ILEGAL_OP;
+
+        if(!fill_ERROR()) {
+            break;
+        }
+
+        send_packet();
+    } while(0);
+    return false;
 }

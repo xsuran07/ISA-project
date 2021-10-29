@@ -40,10 +40,10 @@ Parser::command_t Parser::parse_command()
     this->params.init_values();
 
     while(no_error && i < this->opt_count) {
-        if(this->options[i] == "HELP") {
+        if(this->options[i] == "help") {
             ret = HELP;
             no_error = check_combination(ret, this->options[i]);
-        } else if(this->options[i] == "QUIT") {
+        } else if(this->options[i] == "quit") {
             ret = QUIT;
             no_error = check_combination(ret, this->options[i]);
         } else if(this->params.parse(i, this->options)) {

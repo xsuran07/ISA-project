@@ -63,6 +63,8 @@ class Tftp_client
         uint64_t in_curr_pos;
         uint64_t resp_len;
         std::string log;
+        time_t timer;
+        time_t resend_timer;
 
         std::map<std::string, std::string> options;
         bool last;
@@ -122,6 +124,8 @@ class Tftp_client
          * @param s String to store result into.
          */
         static void ipv6_tostring(struct sockaddr_in6 *addr, std::string &s);
+
+        static uint8_t *resize(uint8_t *old_buf, uint64_t new_size);
 
     private:
         /**
@@ -242,7 +246,7 @@ class Tftp_client
          */
         bool fill_ACK();
 
-        bool fill_ERROR();
+        bool fill_ERROR(err_code_t code, std::string msg);
 
         bool write_two_bytes(uint8_t c1, uint8_t c2);
         bool write_byte(uint8_t b);
@@ -283,6 +287,12 @@ class Tftp_client
         bool validate_option(std::string option, std::string value);
 
         bool check_packet_type(uint16_t resp_type);
+
+        void send_ERROR(err_code_t code, std::string msg);
+
+        bool check_max_blksize(int block_size);
+
+        bool realloc_buffers();
 };
 
 #endif

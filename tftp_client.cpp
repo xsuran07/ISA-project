@@ -13,11 +13,20 @@
 #include <iomanip>
 #include <ctime>
 #include <chrono>
+#include <sys/ioctl.h>
+#include <net/if.h>
+#include <sys/types.h>
+#include <ifaddrs.h>
 
 #include "tftp_client.h"
 
-#define TIMOUT 5
-//#define DEBUG
+#define TIMEOUT 5
+#define HARD_TIMEOUT (3*TIMEOUT + 1)
+#define UDP_HEADER 8
+#define TFTP_HEADER 4
+#define MAX_IP_HEADER 60
+#define MIN_BLOCK_SIZE 8
+// #define DEBUG
 
 // STATIC METHODS
 
@@ -58,8 +67,9 @@ void Tftp_client::ipv6_tostring(struct sockaddr_in6 *addr, std::string &s)
     inet_ntop(AF_INET6, &addr->sin6_addr.s6_addr, buf, INET6_ADDRSTRLEN);
     port = htons(addr->sin6_port);
 
+    s += "[";
     s += buf;
-    s += ":";
+    s += "]:";
     s += std::to_string(port);
 }
 
@@ -82,6 +92,9 @@ bool Tftp_client::communicate(Tftp_parameters *params)
 
     init(params);
 
+    // set extension options values
+    set_options(params);
+
     // process and store address of the server
     if(!process_address(params)) {
         return false;
@@ -92,14 +105,17 @@ bool Tftp_client::communicate(Tftp_parameters *params)
         return false;
     }
 
+    // check if proposed block isze can be satisfy with available MTU
+    if(!check_max_blksize(params->get_size())) {
+        close(this->sock);
+        return false;
+    }
+
     // try to open specified file
     if(!prepare_file(params)) {
         close(this->sock);
         return false;
     }
-
-    // set extension options values
-    set_options(params);
 
     // communicate with server till error or successful transfer
     do {
@@ -225,6 +241,8 @@ bool Tftp_client::set_ipv6(Tftp_parameters *params)
 
     this->addr_len = sizeof(struct sockaddr_in6);
     addr->sin6_port = htons(params->get_port());
+    addr->sin6_scope_id = 0;
+    addr->sin6_flowinfo = 0;
     return true;
 }
 
@@ -241,7 +259,7 @@ bool Tftp_client::process_address(Tftp_parameters *params)
 
 bool Tftp_client::create_socket()
 {
-    struct timeval timout = {TIMOUT, 0};
+    struct timeval timout = {TIMEOUT, 0};
 
     this->sock = socket(this->addr.ss_family, SOCK_DGRAM, 0);
 
@@ -321,6 +339,7 @@ void Tftp_client::set_options(Tftp_parameters *params)
 
 bool Tftp_client::handle_exchange(Tftp_parameters *params)
 {
+    time_t curr_time;
     bool ok = true;
     bool skip = false;
     uint16_t resp_type;
@@ -333,44 +352,40 @@ bool Tftp_client::handle_exchange(Tftp_parameters *params)
         break;
     case OPCODE_RRQ:
         ok = fill_RRQ(params->get_filename().c_str());
-#ifdef DEBUG
-        std::cout << "RRQ\n";
-#endif
         break;
     case OPCODE_WRQ:
         ok = fill_WRQ(params->get_filename().c_str());
-#ifdef DEBUG
-        std::cout << "WRQ\n";
-#endif
         break;
     case OPCODE_DATA:
         ok = fill_DATA();
-#ifdef DEBUG
-        std::cout << "DATA\n";
-#endif
         break;
     case OPCODE_ACK:
         ok = fill_ACK();
-#ifdef DEBUG
-        std::cout << "ACK\n";
-#endif
         break;
     default:
-        std::cerr << "Invalid type of packet!" << std::endl;
+        send_ERROR(ERR_CODE_NOT_DEF, "Internal error!");
+        std::cerr << "Cannot send this type of packet!" << std::endl;
         return false;
     }
 
     if(!ok) {
+        send_ERROR(ERR_CODE_NOT_DEF, "Internal error while filling packet!");
         std::cerr << "Packet filling failed!" << std::endl;
         return false;
     }
 
     // send packet
     if(!skip && !send_packet()) {
+        send_ERROR(ERR_CODE_NOT_DEF, "Internal error while sending packet!");
         return false;
     }
 
-    this->logging(this->send_type, true);
+    if(!skip) {
+        this->logging(this->send_type, true);
+        curr_time = std::time(0);
+        this->timer = curr_time + HARD_TIMEOUT;
+        this->resend_timer = curr_time + TIMEOUT;
+    }
 
     if(!this->exp_resp) {
         this->last = true;
@@ -384,8 +399,15 @@ bool Tftp_client::handle_exchange(Tftp_parameters *params)
         return false;
     }
 
-    // extract type of recieved packet and check its type
-    if(!read_type(resp_type) || !check_packet_type(resp_type)) {
+    // extract type of recieved packet
+    if(!read_type(resp_type)) {
+        send_ERROR(ERR_CODE_NOT_DEF, "Internal error while!");
+        return false;
+    }
+
+    // check packet's type
+    if(!check_packet_type(resp_type)) {
+        send_ERROR(ERR_CODE_ILEGAL_OP, "Invalid packet type!");
         return false;
     }
 
@@ -400,18 +422,20 @@ bool Tftp_client::handle_exchange(Tftp_parameters *params)
         ok = parse_ACK();
         break;
     case OPCODE_OACK:
-#ifdef DEBUG
-        std::cout << "OACK\n";
-#endif
         ok = parse_OACK();
         break;
     default:
+        send_ERROR(ERR_CODE_NOT_DEF, "Internal error!");
         std::cerr << "Got unknown type of tftp packet!" << std::endl;
         return false;
     }
 
     if(ok) {
         this->logging(static_cast<opcode_t> (resp_type), false);
+        ok = !(resp_type == OPCODE_ERROR && this->last); // ERROR as last packet of communication means unsuccess
+    } else {
+        send_ERROR(ERR_CODE_ILEGAL_OP, "Invalid packet!");
+        return false;
     }
 
     return ok;
@@ -428,48 +452,102 @@ bool Tftp_client::check_address_ipv4(struct sockaddr_in *addr)
     std::cout << "PORT: " << ntohs(addr->sin_port) << std::endl;
 #endif
 
-    if(addr->sin_addr.s_addr != origin->sin_addr.s_addr) {
-        std::cerr << "Packet from unexpected source (ipv4)!" << std::endl;
-        return false;
-    }
+    do {
+        //check address
+        if(addr->sin_addr.s_addr != origin->sin_addr.s_addr) {
+            break;
+        }
 
-    // in case of first response, get server's TID    
-    if(this->first) {
-        this->first = false;
-        origin->sin_port = addr->sin_port;
+        // in case of first response, get server's TID
+        if(this->first) {
+            this->first = false;
+            origin->sin_port = addr->sin_port;
+        // check correctness of server's TID
+        } else if(addr->sin_port != origin->sin_port) {
+            break;
+        }
+
         return true;
-    // check correctness of server's TID
-    } else {
-        return addr->sin_port == origin->sin_port;
-    }
+    } while(0);
+
+    // backup
+    unsigned long orig_addr = origin->sin_addr.s_addr;
+    unsigned short orig_port = origin->sin_port;
+    uint8_t orig_buf[this->out_curr_pos];
+    memcpy(orig_buf, static_cast<void *> (this->out_buffer.get()), this->out_curr_pos);
+
+    // set temporary values
+    origin->sin_addr.s_addr = addr->sin_addr.s_addr;
+    origin->sin_port = addr->sin_port;
+
+    std::cerr << "Got packet with unknown TID (IPV4)" << std::endl;
+    send_ERROR(ERR_CODE_UNKNOWN_ID, "Unknown TID!");
+
+    // restore original values
+    origin->sin_addr.s_addr = orig_addr;
+    origin->sin_port = orig_port;
+    memcpy(static_cast<void *> (this->out_buffer.get()), orig_buf, this->out_curr_pos);
+
+    return false;
 }
 
 bool Tftp_client::check_address_ipv6(struct sockaddr_in6 *addr)
 {
     char buf[INET6_ADDRSTRLEN];
     struct sockaddr_in6 *origin = (struct sockaddr_in6 *) &this->addr;
+    bool ok = true;
 
     inet_ntop(AF_INET, &addr->sin6_addr.s6_addr, buf, INET6_ADDRSTRLEN);
 #ifdef DEBUG
     std::cout << "Address: " << buf << std::endl;
     std::cout << "PORT: " << ntohs(addr->sin6_port) << std::endl;
 #endif
-    for(int i = 0; i < 16; i++) {
-        if(origin->sin6_addr.s6_addr[i] != addr->sin6_addr.s6_addr[i]) {
-            std::cerr << "Packet from unexpected source (ipv6)!" << std::endl;
-            return false;
+    do {
+        for(int i = 0; i < 16; i++) {
+            if(origin->sin6_addr.s6_addr[i] != addr->sin6_addr.s6_addr[i]) {
+                std::cerr << "Packet from unexpected source (ipv6)!" << std::endl;
+                ok = false;
+                break;
+            }
         }
-    }
-    
-    // in case of first response, get server's TID    
-    if(this->first) {
-        this->first = false;
-        origin->sin6_port = addr->sin6_port;
+
+        if(!ok) {
+            break;
+        }
+
+        // in case of first response, get server's TID
+        if(this->first) {
+            this->first = false;
+            origin->sin6_port = addr->sin6_port;
+            return true;
+        // check correctness of server's TID
+        } else if(addr->sin6_port != origin->sin6_port) {
+            break;
+        }
+
         return true;
-    // check correctness of server's TID
-    } else {
-        return addr->sin6_port == origin->sin6_port;
-    }
+    } while(0);
+
+    // backup
+    unsigned char orig_addr[16];
+    memcpy(orig_addr, origin->sin6_addr.s6_addr, 16);
+    unsigned short orig_port = origin->sin6_port;
+    uint8_t orig_buf[this->out_curr_pos];
+    memcpy(orig_buf, static_cast<void *> (this->out_buffer.get()), this->out_curr_pos);
+
+    // set temporary values
+    origin->sin6_port = addr->sin6_port;
+    memcpy(origin->sin6_addr.s6_addr, addr->sin6_addr.s6_addr, 16);
+
+    std::cerr << "Got packet with unknown TID (IPV6)" << std::endl;
+    send_ERROR(ERR_CODE_UNKNOWN_ID, "Unknown TID!");
+
+    // restore original values
+    memcpy(origin->sin6_addr.s6_addr, orig_addr, 16);
+    origin->sin6_port = orig_port;
+    memcpy(static_cast<void *> (this->out_buffer.get()), orig_buf, this->out_curr_pos);
+
+    return false;
 }
 
 bool Tftp_client::check_address(struct sockaddr_storage *addr)
@@ -521,33 +599,46 @@ bool Tftp_client::recv_packet()
     struct sockaddr_storage src_addr;
     socklen_t size = sizeof(struct sockaddr_storage);
     ssize_t ret;
-    bool first = true;
+    time_t curr_time = std::time(0);
+
+
+    // in case resending timeout was interrupt with other packets
+    if(curr_time > this->resend_timer) {
+        print_timestamp();
+        std::cout << "Timout expired - re-sending last packet!" << std::endl;
+        if(!send_packet()) {
+            return false;
+        }
+        this->resend_timer = curr_time + TIMEOUT;
+    }
 
     while(1) {
         ret = recvfrom_wrapper(&src_addr, &size);
+        curr_time = std::time(0);
+
+        if (curr_time > this->timer) {
+            print_timestamp();
+            std::cout << "Transfer time-out!" << std::endl;
+            break;
+        }
 
         if(ret > 0) { // successfully recieved some data
-            break;
-        } else if(first) { // timout expired first time => resend
-            first = false;
+            if(check_address(&src_addr)) {
+                this->resp_len = ret;
+                return true;
+            }
+        } else { // timout expired first time => resend
             print_timestamp();
             std::cout << "Timout expired - re-sending last packet!" << std::endl;
             if(!send_packet()) {
-                return false;
+                break;
             }
-        } else { // timeot expired second time => fail
-            print_timestamp();
-            std::cout << "Timout expired again!" << std::endl;
-            return false;
+
+            this->resend_timer = curr_time + TIMEOUT;
         }
     }
 
-    if(!check_address(&src_addr)) {
-        return false;
-    }
-
-    this->resp_len = ret;
-    return true;
+    return false;
 }
 
 bool Tftp_client::send_packet()
@@ -809,16 +900,16 @@ bool Tftp_client::fill_DATA()
     return true;
 }
 
-bool Tftp_client::fill_ERROR()
+bool Tftp_client::fill_ERROR(err_code_t code, std::string msg)
 {
-    std::string msg = "";
+    this->out_curr_pos = 0; // reinitialize
 
     do {
         if(!write_word(OPCODE_ERROR)) {
             break;
         }
 
-        if(!write_word(this->error_code)) {
+        if(!write_word(code)) {
             break;
         }
 
@@ -826,7 +917,7 @@ bool Tftp_client::fill_ERROR()
             break;
         }
 
-        this->log += "code: " + std::to_string(this->error_code) + " ,msg: " + msg;
+        this->log += "code: " + std::to_string(code) + ", msg: " + msg;
         this->exp_resp = false;
        return true;
     } while(0);
@@ -1086,7 +1177,7 @@ bool Tftp_client::parse_OACK()
         log += (it->second.empty())? " (confirmed)" : " (not confirmed)"; 
     }
 
-    return true;
+    return realloc_buffers();
 }
 
 bool Tftp_client::validate_option(std::string option, std::string value)
@@ -1109,6 +1200,51 @@ bool Tftp_client::validate_option(std::string option, std::string value)
 
     this->options[option].clear();
     return ret;
+}
+
+uint8_t *Tftp_client::resize(uint8_t *old_buf, uint64_t new_size)
+{
+    uint8_t *new_buf;
+
+    if(old_buf != nullptr) {
+        delete[] old_buf;
+    }
+
+    new_buf = new(std::nothrow) uint8_t[new_size];
+
+    if(new_buf != nullptr) {
+        memset(new_buf, 0, new_size);
+    }
+
+    return new_buf;
+}
+
+bool Tftp_client::realloc_buffers()
+{
+    const uint64_t new_size = this->block_size + TFTP_HEADER;
+    uint8_t *buf;
+
+    if(this->size < new_size) {
+        // resieze output buffer
+        if((buf = resize(this->out_buffer.release(), new_size)) == nullptr) {
+            return false;
+        }
+
+        this->out_buffer.reset(buf);
+
+        // resieze input buffer
+        if((buf = resize(this->in_buffer.release(), new_size)) == nullptr) {
+            return false;
+        }
+
+        this->in_buffer.reset(buf);
+        this->size = new_size;
+
+        memset(static_cast<void *> (this->out_buffer.get()), 0, new_size);
+        memset(static_cast<void *> (this->in_buffer.get()), 0, new_size);
+    }
+
+    return true;
 }
 
 bool Tftp_client::check_packet_type(uint16_t resp_type)
@@ -1140,15 +1276,72 @@ bool Tftp_client::check_packet_type(uint16_t resp_type)
     std::cout << "Recieved wrong type of packet! Expected " << types[this->exp_type] <<
         ", got " << types[resp_type];
 
-    // send error packet before termination
-    do {
-        this->error_code = ERR_CODE_ILEGAL_OP;
+    return false;
+}
 
-        if(!fill_ERROR()) {
+void Tftp_client::send_ERROR(err_code_t code, std::string msg)
+{
+    do {
+        if(!fill_ERROR(code, msg)) {
             break;
         }
 
-        send_packet();
+        if(!send_packet()) {
+            break;
+        }
+
+        logging(OPCODE_ERROR, true);
     } while(0);
-    return false;
+}
+
+bool Tftp_client::check_max_blksize(int block_size)
+{
+    struct ifaddrs *addrs;
+    struct ifreq ifr;
+    int min_mtu = -1;
+    const int headers = MAX_IP_HEADER + UDP_HEADER + TFTP_HEADER;
+
+    getifaddrs(&addrs);
+
+    // check all interefaces
+    for(struct ifaddrs *a = addrs; a != NULL; a = a->ifa_next) {
+        // we're interested only in address family same as our socket
+        if(a->ifa_addr->sa_family != this->addr.ss_family) {
+            continue;
+        }
+
+        memset(&ifr, 0, sizeof(struct ifreq));
+        strncpy(ifr.ifr_name, a->ifa_name, sizeof(ifr.ifr_name));
+
+        // get information about interface
+        if(ioctl(this->sock, SIOCGIFMTU, &ifr) != 0 || ifr.ifr_mtu < 0) {
+            continue;
+        }
+
+        // first assingment
+        if(min_mtu < 0) {
+            min_mtu = ifr.ifr_mtu;
+        } else {
+            min_mtu = (min_mtu > ifr.ifr_mtu)? ifr.ifr_mtu : min_mtu;
+        }
+    }
+
+    // make sure smallest mtu is big enough
+    if(min_mtu < headers + MIN_BLOCK_SIZE) {
+        std::cerr << "Not able find interface with MTU large enough" << std::endl;
+        return false;
+    }
+
+    min_mtu = min_mtu - headers;
+    std::cout << "MIn: " << min_mtu << std::endl;
+
+    if(block_size > min_mtu) {
+        this->options["blksize"] = std::to_string(min_mtu);
+
+        std::cout << "Warning! Proposed blocksize (" << block_size
+            << ") is too big! Value " << min_mtu << " will be used (based on available MTUs)." << std::endl;
+    }
+
+    freeifaddrs(addrs);
+    return true;
 }

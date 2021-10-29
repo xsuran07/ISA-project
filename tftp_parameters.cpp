@@ -105,7 +105,7 @@ bool Tftp_parameters::parse(size_t &curr, std::vector<std::string> options)
         this->params.req_type = WRITE;
     // request multicast
     } else if(options[curr] == "-m") {
-        ret = false;
+        ret = true;
         this->params.multicast = true;
     // file to upload/download
     } else if(options[curr] == "-d") {
@@ -334,7 +334,7 @@ bool Tftp_parameters::require_arg(size_t &curr, std::vector<std::string> options
         return false;
     }
     if(curr + 1 >= options.size()) {
-        std::cerr << "Option " << options[curr] << " requires argument (see HELP)!" << std::endl;
+        std::cerr << "Option " << options[curr] << " requires argument (see help)!" << std::endl;
         return false;
     }
 

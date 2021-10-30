@@ -26,6 +26,7 @@
 #define TFTP_HEADER 4
 #define MAX_IP_HEADER 60
 #define MIN_BLOCK_SIZE 8
+#define MAX_REQUEST_SIZE 512
 // #define DEBUG
 
 // STATIC METHODS
@@ -161,6 +162,7 @@ void Tftp_client::logging(opcode_t type, bool sending)
 
     if(sending && this->resend_rq) {
         str += "Re-sent ";
+        this->resend_rq = false;
     } else {
         str += (sending)? "Sent " : "Recieved ";
     }
@@ -173,7 +175,7 @@ void Tftp_client::logging(opcode_t type, bool sending)
             break;
         case OPCODE_DATA:
             str += "DATA ";
-            if(this->binary) {
+            if(this->binary && this->options.find("tsize") != this->options.end()) {
                 this->log += "(total " + std::to_string(this->cur_size) + "/" + std::to_string(this->tsize) + ")";
             }
             break;
@@ -198,11 +200,6 @@ void Tftp_client::logging(opcode_t type, bool sending)
         ipv4_tostring((struct sockaddr_in *) &this->addr, str);
     } else {
         ipv6_tostring((struct sockaddr_in6 *) &this->addr, str);
-    }
-
-    if(sending && this->resend_rq) {
-        str += " without options";
-        this->resend_rq = false;
     }
 
     print_timestamp();
@@ -298,6 +295,7 @@ bool Tftp_client::create_socket()
 
 bool Tftp_client::prepare_file(Tftp_parameters *params)
 {
+    std::string str;
     std::vector<std::string> parts;
     Tftp_parameters::split_string(params->get_filename(), "/", parts);
     std::string name_of_file = parts[parts.size() - 1];
@@ -305,13 +303,15 @@ bool Tftp_client::prepare_file(Tftp_parameters *params)
 
     if(params->get_req_type() == Tftp_parameters::READ) {
         mode |= std::fstream::out;
+        str = "Opening of file \"" + name_of_file + "\"failed!";
     } else {
         mode |= std::fstream::in;
+        str = "Cannot find file \"" + name_of_file + "\" in current directory!";
     }
 
     this->file.open(name_of_file, mode);
     if(this->file.fail()) {
-        std::cerr << "Opening of file \"" << name_of_file << "\"failed!" << std::endl;
+        std::cerr << str << std::endl;
         return false;
     }
 
@@ -861,7 +861,7 @@ bool Tftp_client::write_string(const char *str)
 {
     size_t len = strlen(str);
 
-    if(this->out_curr_pos + len >= this->size) {
+    if(this->out_curr_pos + len + 1 >= this->size) {
         return false;
     }
 
@@ -877,6 +877,8 @@ bool Tftp_client::write_string(const char *str)
 
 bool Tftp_client::write_options()
 {
+    size_t len;
+
     if(this->options.empty()) {
         return true;
     }
@@ -886,6 +888,12 @@ bool Tftp_client::write_options()
     exp_type = OPCODE_OACK;
 
     for(auto it = this->options.begin(); it != this->options.end(); ++it) {
+        // maximum size of request packet is 512 bytes
+        len = it->first.size() + it->second.size() + 2;
+        if(this->out_curr_pos + len > MAX_REQUEST_SIZE) {
+            break;
+        }
+
         log += (it == this->options.begin())? " " : ", ";
         log += it->first + "(" + it->second + ")";
 
@@ -1167,8 +1175,18 @@ bool Tftp_client::parse_ERROR()
 
         this->log += "code: " + std::to_string(err_code) + ", msg: " + err_msg;
 
+        // server refused some of the proposed extension options => try to modify request packet
         if(this->exp_type == OPCODE_OACK && err_code == ERR_CODE_PROBLEMATIC_OPTION) {
-            this->options.clear();
+            if(this->options.find("tsize") != this->options.end()) {
+                this->options.erase("tsize");
+            } else if(this->options.find("timeout") != this->options.end()) {
+                this->options.erase("timeout");
+            } else if(this->options.find("blksize") != this->options.end()) {
+                this->options.erase("blksize");
+            } else {
+                return false;
+            }
+
             this->last = false;
             this->first = true;
             this->resend_rq = true;

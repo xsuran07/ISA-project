@@ -58,7 +58,8 @@ void Terminal::print_help()
     std::cout << "\t -R - request reading from server (required if -W isn't used, usage of both is forbidden)" << std::endl;
     std::cout << "\t -W - request writing to server (required if -R isn't used, usage of both is forbidden)" << std::endl;
     std::cout << "\t -d /absolute_path/filename - filename specifis name of file to transfer,"
-        << " absolute_path specifies location of file on server (reqired)" << std::endl;
+        << " absolute_path specifies location of file on server; on client side file is taken from" << std::endl;
+    std::cout << "\t  and stored to current directory (reqired)" << std::endl;
     std::cout << "\t -t timeout - specifies timeout in second, which will be proposed to server - RFC 2348 (optional)" << std::endl;
     std::cout << "\t -s blksize - blocksize, which will be proposed to server - RFC 2347; if not used"
         << " value of 512 bytes is default (optional)" << std::endl;

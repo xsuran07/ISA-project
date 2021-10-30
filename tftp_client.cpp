@@ -73,6 +73,25 @@ void Tftp_client::ipv6_tostring(struct sockaddr_in6 *addr, std::string &s)
     s += std::to_string(port);
 }
 
+uint8_t *Tftp_client::resize(uint8_t *old_buf, uint64_t new_size)
+{
+    uint8_t *new_buf;
+
+    // frees old buffer
+    if(old_buf != nullptr) {
+        delete[] old_buf;
+    }
+
+    new_buf = new(std::nothrow) uint8_t[new_size];
+
+    // set initial values
+    if(new_buf != nullptr) {
+        memset(new_buf, 0, new_size);
+    }
+
+    return new_buf;
+}
+
 // PUBLIC INSTANCE METHODS
 
 // contstructor
@@ -335,6 +354,58 @@ void Tftp_client::set_options(Tftp_parameters *params)
     }
 }
 
+bool Tftp_client::check_max_blksize(int block_size)
+{
+    struct ifaddrs *addrs;
+    struct ifreq ifr;
+    int min_mtu = -1;
+    const int headers = MAX_IP_HEADER + UDP_HEADER + TFTP_HEADER;
+
+    getifaddrs(&addrs);
+
+    // check all interefaces
+    for(struct ifaddrs *a = addrs; a != NULL; a = a->ifa_next) {
+        // we're interested only in address family same as our socket
+        if(a->ifa_addr->sa_family != this->addr.ss_family) {
+            continue;
+        }
+
+        memset(&ifr, 0, sizeof(struct ifreq));
+        strncpy(ifr.ifr_name, a->ifa_name, sizeof(ifr.ifr_name));
+
+        // get information about interface
+        if(ioctl(this->sock, SIOCGIFMTU, &ifr) != 0 || ifr.ifr_mtu < 0) {
+            continue;
+        }
+
+        // first assingment
+        if(min_mtu < 0) {
+            min_mtu = ifr.ifr_mtu;
+        } else {
+            min_mtu = (min_mtu > ifr.ifr_mtu)? ifr.ifr_mtu : min_mtu;
+        }
+    }
+
+    // make sure smallest mtu is big enough
+    if(min_mtu < headers + MIN_BLOCK_SIZE) {
+        std::cerr << "Not able find interface with MTU large enough" << std::endl;
+        return false;
+    }
+
+    min_mtu = min_mtu - headers;
+    std::cout << "MIn: " << min_mtu << std::endl;
+
+    if(block_size > min_mtu) {
+        this->options["blksize"] = std::to_string(min_mtu);
+
+        std::cout << "Warning! Proposed blocksize (" << block_size
+            << ") is too big! Value " << min_mtu << " will be used (based on available MTUs)." << std::endl;
+    }
+
+    freeifaddrs(addrs);
+    return true;
+}
+
 // PRIVATE INSTANCE METHODS TO HADNLE COMMUNICATION ITSELF
 
 bool Tftp_client::handle_exchange(Tftp_parameters *params)
@@ -552,11 +623,21 @@ bool Tftp_client::check_address_ipv6(struct sockaddr_in6 *addr)
 
 bool Tftp_client::check_address(struct sockaddr_storage *addr)
 {
+    bool ret;
+
     if(this->addr.ss_family == AF_INET) {
-        return check_address_ipv4((struct sockaddr_in *) addr);
+        ret = check_address_ipv4((struct sockaddr_in *) addr);
     } else {
-        return check_address_ipv6((struct sockaddr_in6 *) addr);
+        ret = check_address_ipv6((struct sockaddr_in6 *) addr);
     }
+
+    if(!ret) {
+        if(std::time(0) > this->resend_timer) {
+            resend_last();
+        }
+    }
+
+    return ret;
 }
 
 void Tftp_client::reset_ipv4_TID()
@@ -594,6 +675,15 @@ int Tftp_client::recvfrom_wrapper(struct sockaddr_storage *src_addr, socklen_t *
     );
 }
 
+bool Tftp_client::resend_last()
+{
+    print_timestamp();
+    this->resend_timer = std::time(0) + TIMEOUT;
+    std::cout << "Timout expired - re-sending last packet!" << std::endl;
+
+    return send_packet();
+}
+
 bool Tftp_client::recv_packet()
 {
     struct sockaddr_storage src_addr;
@@ -601,15 +691,11 @@ bool Tftp_client::recv_packet()
     ssize_t ret;
     time_t curr_time = std::time(0);
 
-
     // in case resending timeout was interrupt with other packets
     if(curr_time > this->resend_timer) {
-        print_timestamp();
-        std::cout << "Timout expired - re-sending last packet!" << std::endl;
-        if(!send_packet()) {
+        if(!resend_last()) {
             return false;
         }
-        this->resend_timer = curr_time + TIMEOUT;
     }
 
     while(1) {
@@ -627,14 +713,10 @@ bool Tftp_client::recv_packet()
                 this->resp_len = ret;
                 return true;
             }
-        } else { // timout expired first time => resend
-            print_timestamp();
-            std::cout << "Timout expired - re-sending last packet!" << std::endl;
-            if(!send_packet()) {
+        } else { // timout expired => resend
+            if(!resend_last()) {
                 break;
             }
-
-            this->resend_timer = curr_time + TIMEOUT;
         }
     }
 
@@ -660,6 +742,58 @@ bool Tftp_client::send_packet()
     }
 
     return true;
+}
+
+bool Tftp_client::check_packet_type(uint16_t resp_type)
+{
+    std::vector<std::string> types({"none", "RRQ", "WRQ", "DATA", "ACK", "ERROR"});
+
+    // error packet automaticaly matches everything
+    if(resp_type == OPCODE_ERROR) {
+        return true;
+    }
+
+    // recieved packet type match expected type
+    if(resp_type == this->exp_type) {
+        return true;
+    }
+
+    // duplicate OACK packet is acceptable
+    if(resp_type == OPCODE_OACK) {
+        return true;
+    }
+
+    if(this->exp_type == OPCODE_OACK) {
+        // server ignores options and immediately sends data on RRQ
+        if(this->send_type == OPCODE_RRQ && resp_type == OPCODE_DATA) {
+            return true;
+        // server ignores options and immediately sends ACK on WRQ
+        } else if(this->send_type == OPCODE_WRQ && resp_type == OPCODE_ACK) {
+            return true;
+        }
+
+    }
+
+    print_timestamp();
+    std::cout << "Recieved wrong type of packet! Expected " << types[this->exp_type] <<
+        ", got " << types[resp_type];
+
+    return false;
+}
+
+void Tftp_client::send_ERROR(err_code_t code, std::string msg)
+{
+    do {
+        if(!fill_ERROR(code, msg)) {
+            break;
+        }
+
+        if(!send_packet()) {
+            break;
+        }
+
+        logging(OPCODE_ERROR, true);
+    } while(0);
 }
 
 // PRIVATE INSTANCE METHODS TO SIMPLIFY FILLING OF DATA INTO PACKETS
@@ -1063,8 +1197,10 @@ bool Tftp_client::parse_ACK()
 
     this->log += "block number " + std::to_string(block_num);
 
+    // duplicate ACK packets are ignored
     if(block_num < this->block_num) {
         this->send_type = OPCODE_SKIP;
+        this->log += " (duplicate - will be ignored)";
         return true;
     }
 
@@ -1091,6 +1227,21 @@ bool Tftp_client::parse_DATA()
 #ifdef DEBUG
     std::cout << "TFTP DATA - block: " << block_num << std::endl;
 #endif
+
+    // block number cannot be 0
+    if(block_num == 0) {
+        return false;
+    }
+
+    this->log += "block number " + std::to_string(block_num) + ", ";
+
+    // duplicate DATA packet means resend of last ACK packet
+    if(block_num < this->block_num) {
+        this->log += " (duplicate - last ACK packet has been resent)";
+        this->send_type = OPCODE_SKIP;
+        this->resend_timer = std::time(0) + TIMEOUT;
+        return send_packet();
+    }
 
     // CR byte from previous data block
     if(!this->bytes_left.empty()) {
@@ -1132,7 +1283,6 @@ bool Tftp_client::parse_DATA()
     }
 
     // create log information
-    this->log += "block number " + std::to_string(block_num) + ", ";
     this->log += std::to_string(data_size) + " bytes ";
 
     return true;
@@ -1142,6 +1292,12 @@ bool Tftp_client::parse_OACK()
 {
     std::string option;
     std::string value;
+
+    // duplicate OACK packet is ignored
+    if(this->exp_type != OPCODE_OACK) {
+        this->send_type = OPCODE_SKIP;
+        return true;
+    }
 
     // for read request OACK is followed by ACK num 0
     if(this->send_type == OPCODE_RRQ) {
@@ -1202,23 +1358,6 @@ bool Tftp_client::validate_option(std::string option, std::string value)
     return ret;
 }
 
-uint8_t *Tftp_client::resize(uint8_t *old_buf, uint64_t new_size)
-{
-    uint8_t *new_buf;
-
-    if(old_buf != nullptr) {
-        delete[] old_buf;
-    }
-
-    new_buf = new(std::nothrow) uint8_t[new_size];
-
-    if(new_buf != nullptr) {
-        memset(new_buf, 0, new_size);
-    }
-
-    return new_buf;
-}
-
 bool Tftp_client::realloc_buffers()
 {
     const uint64_t new_size = this->block_size + TFTP_HEADER;
@@ -1244,104 +1383,5 @@ bool Tftp_client::realloc_buffers()
         memset(static_cast<void *> (this->in_buffer.get()), 0, new_size);
     }
 
-    return true;
-}
-
-bool Tftp_client::check_packet_type(uint16_t resp_type)
-{
-    std::vector<std::string> types({"none", "RRQ", "WRQ", "DATA", "ACK", "ERROR"});
-
-    // error packet automaticaly matches everything
-    if(resp_type == OPCODE_ERROR) {
-        return true;
-    }
-
-    // recieved packet type match expected type
-    if(resp_type == this->exp_type) {
-        return true;
-    }
-
-    if(this->exp_type == OPCODE_OACK) {
-        // server ignores options and immediately sends data on RRQ
-        if(this->send_type == OPCODE_RRQ && resp_type == OPCODE_DATA) {
-            return true;
-        // server ignores options and immediately sends ACK on WRQ
-        } else if(this->send_type == OPCODE_WRQ && resp_type == OPCODE_ACK) {
-            return true;
-        }
-
-    }
-
-    print_timestamp();
-    std::cout << "Recieved wrong type of packet! Expected " << types[this->exp_type] <<
-        ", got " << types[resp_type];
-
-    return false;
-}
-
-void Tftp_client::send_ERROR(err_code_t code, std::string msg)
-{
-    do {
-        if(!fill_ERROR(code, msg)) {
-            break;
-        }
-
-        if(!send_packet()) {
-            break;
-        }
-
-        logging(OPCODE_ERROR, true);
-    } while(0);
-}
-
-bool Tftp_client::check_max_blksize(int block_size)
-{
-    struct ifaddrs *addrs;
-    struct ifreq ifr;
-    int min_mtu = -1;
-    const int headers = MAX_IP_HEADER + UDP_HEADER + TFTP_HEADER;
-
-    getifaddrs(&addrs);
-
-    // check all interefaces
-    for(struct ifaddrs *a = addrs; a != NULL; a = a->ifa_next) {
-        // we're interested only in address family same as our socket
-        if(a->ifa_addr->sa_family != this->addr.ss_family) {
-            continue;
-        }
-
-        memset(&ifr, 0, sizeof(struct ifreq));
-        strncpy(ifr.ifr_name, a->ifa_name, sizeof(ifr.ifr_name));
-
-        // get information about interface
-        if(ioctl(this->sock, SIOCGIFMTU, &ifr) != 0 || ifr.ifr_mtu < 0) {
-            continue;
-        }
-
-        // first assingment
-        if(min_mtu < 0) {
-            min_mtu = ifr.ifr_mtu;
-        } else {
-            min_mtu = (min_mtu > ifr.ifr_mtu)? ifr.ifr_mtu : min_mtu;
-        }
-    }
-
-    // make sure smallest mtu is big enough
-    if(min_mtu < headers + MIN_BLOCK_SIZE) {
-        std::cerr << "Not able find interface with MTU large enough" << std::endl;
-        return false;
-    }
-
-    min_mtu = min_mtu - headers;
-    std::cout << "MIn: " << min_mtu << std::endl;
-
-    if(block_size > min_mtu) {
-        this->options["blksize"] = std::to_string(min_mtu);
-
-        std::cout << "Warning! Proposed blocksize (" << block_size
-            << ") is too big! Value " << min_mtu << " will be used (based on available MTUs)." << std::endl;
-    }
-
-    freeifaddrs(addrs);
     return true;
 }

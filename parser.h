@@ -18,6 +18,9 @@
 class Parser
 {
     public:
+        /**
+         * @brief Types of supported commands.
+         */
         typedef enum {
             HELP,
             QUIT,

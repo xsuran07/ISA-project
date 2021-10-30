@@ -125,6 +125,14 @@ class Tftp_client
          */
         static void ipv6_tostring(struct sockaddr_in6 *addr, std::string &s);
 
+        /**
+         * @brief Frees old buffer and allocates space for new one with
+         * specified size.
+         * @param old_buf Pointert to old buffer, which shall be freed.
+         * @param new_size New size of buffer to allocate.
+         * @returns pointer to newly allocated buffer with specified size
+         * (if allocation failed, NULL is returned).
+         */
         static uint8_t *resize(uint8_t *old_buf, uint64_t new_size);
 
     private:
@@ -193,22 +201,130 @@ class Tftp_client
          */
         bool prepare_file(Tftp_parameters *params);
 
+        /**
+         * @brief Find out size of file that will be transfer to
+         * server and stores it into appropriate attribute.
+         */
         void get_filesize();
 
+        /**
+         * @brief Extract values of TFPT extension paremeters from given structure
+         * and stores them into appropriate attribute.
+         * @param params Structue with TFTP parameters to take neccessary
+         * information from.
+         */
         void set_options(Tftp_parameters *params);
 
-
+        /**
+         * @brief Handle exchange of packets pair from and to server - send
+         * neccessary type of packet, and process response.
+         * @param params Structue with TFTP parameters to take neccessary
+         * information from.
+         * @returns true in case of success, false otherwise.
+         */
         bool handle_exchange(Tftp_parameters *params);
+
+        /**
+         * @brief Send data stored in internal buffer to server.
+         * @returns true in case of success, false otherwise.
+         */
         bool send_packet();
+
+        /**
+         * @brief Conveniant wrapper around call of recvfrom function - 
+         * waits for packet and stores it into internal buffer.
+         * @param src_addr Pointer to structure where address of recieved packet's
+         * host will be stored.
+         * @param size Pointer to variable, where size of recieved response will be stored.
+         * @returns value returned by recvfrom function.
+         */
         int recvfrom_wrapper(struct sockaddr_storage *src_addr, socklen_t *size);
+
+        /**
+         * @brief Handle packet recieving - handle waiting, timeout handling, check
+         * of response verification, etc.
+         * @returns true in case of success, false otherwise.
+         */
         bool recv_packet();
+
+        /**
+         * @brief Check if recieved packet has been sent by
+         * expected server with correct TID and handles sending of ERROR packets
+         * in case of invalid TID.
+         * @param addr Structue with address to be checked.
+         * @returns true in case of success, false otherwise.
+         */
         bool check_address(struct sockaddr_storage *addr);
+
+        /**
+         * @brief Perform address check for ipv4 host.
+         * @param addr Structure with ipv4 address to be checked
+         * @returns true in case of success, false otherwise.
+         */
         bool check_address_ipv4(struct sockaddr_in *addr);
+
+        /**
+         * @brief Perform address check for ipv6 host.
+         * @param addr Structure with ipv6 address to be checked
+         * @returns true in case of success, false otherwise.
+         */
         bool check_address_ipv6(struct sockaddr_in6 *addr);
+
+        /**
+         * @brief Reset internal representation of server's TID to
+         * initial value.
+         */
         void reset_TID();
+
+        /**
+         * @brief Reset internal representation of server's TID to
+         * initial value for ipv4 host.
+         */
         void reset_ipv4_TID();
+
+        /**
+         * @brief Reset internal representation of server's TID to
+         * initial value for ipv6 host.
+         */
         void reset_ipv6_TID();
 
+        /**
+         * @brief Check if proposed block size can fit into available
+         * MTUs.
+         * @param block_size Blocksize to be checked.
+         * @returns true in case of success, false otherwise.
+         */
+        bool check_max_blksize(int block_size);
+
+        /**
+         * @brief Check if negotiate size of block can fit
+         * into internal buffers and if not, handles reallocation.
+         * @returns true in case of success, false otherwise.
+         */
+        bool realloc_buffers();
+
+
+        /**
+         * @brief Checks if type of recieved packet is as expected or not.
+         * @param resp_type Type of recieved packet to be checked.
+         * @returns true in case of success, false otherwise.
+         */
+        bool check_packet_type(uint16_t resp_type);
+
+        /**
+         * @brief Resend last packet.
+         * @returns true in case of success, false otherwise.
+         */
+        bool resend_last();
+
+        /**
+         * @brief Handle sending of ERROR packet with specified
+         * values.
+         * @param code Error code to include into ERROR packet.
+         * @param msg Human readable message to include into
+         * ERROR packet.
+         */
+        void send_ERROR(err_code_t code, std::string msg);
 
         /**
          * @brief Try to fill appropriate data into request packets (RRQ or WRQ)
@@ -246,19 +362,49 @@ class Tftp_client
          */
         bool fill_ACK();
 
+        /**
+         * @brief Try to fill provided data into ERROR packet.
+         * @param code Error code to include into packet.
+         * @param msg Human readable message to include into buffer.
+         * @returns true in case of success, false otherwise.
+         */
         bool fill_ERROR(err_code_t code, std::string msg);
 
+        /**
+         * @brief Try to add provided two bytes into internal buffer.
+         * @param c1 First byte to add into internal buffer.
+         * @param c2 Second byte to add into internal buffer.
+         * @returns true in case of success, false otherwise.
+         */
         bool write_two_bytes(uint8_t c1, uint8_t c2);
-        bool write_byte(uint8_t b);
-        bool write_word(uint16_t w);
-        bool write_string(const char *str);
-        bool write_options();
 
-        bool read_type(uint16_t &res);
-        bool read_cr(uint8_t &res);
-        bool read_byte(uint8_t &res);
-        bool read_word(uint16_t &res);
-        bool read_string(std::string &res);
+        /**
+         * @brief Try to add provided byte into internal buffer.
+         * @param b Byte to add into internal buffer.
+         * @returns true in case of success, false otherwise.
+         */
+        bool write_byte(uint8_t b);
+
+        /**
+         * @brief Try to add provided word into internal buffer.
+         * @param w Word to add into internal buffer.
+         * @returns true in case of success, false otherwise.
+         */
+        bool write_word(uint16_t w);
+
+        /**
+         * @brief Try to add provided string into internal buffer.
+         * @param str String to add into internal buffer.
+         * @returns true in case of success, false otherwise.
+         */
+        bool write_string(const char *str);
+
+        /**
+         * @brief Try to add TFTP extension options from attribute
+         * into internal buffer.
+         * @returns true in case of success, false otherwise.
+         */
+        bool write_options();
 
 
         /**
@@ -282,17 +428,59 @@ class Tftp_client
          */
         bool parse_DATA();
 
+        /**
+         * @brief Try to parse and extract information from
+         * recieved OACK packet.
+         * @returns true in case of success, false otherwise.
+         */
         bool parse_OACK();
 
+        /**
+         * @brief Try to extract TFTP packet type from
+         * recieved packet.
+         * @param res Varialbe to stored extracted type into.
+         * @returns true in case of success, false otherwise.
+         */
+        bool read_type(uint16_t &res);
+
+        /**
+         * @brief Handle reading of CR byte from recieved
+         * packet for netascii mode.
+         * @param res Variable to store result into.
+         * @returns true in case of success, false otherwise.
+         */
+        bool read_cr(uint8_t &res);
+
+        /**
+         * @brief Try to extract byte from recieved packet.
+         * @param res Variable to store result into.
+         * @returns true in case of success, false otherwise.
+         */
+        bool read_byte(uint8_t &res);
+
+        /**
+         * @brief Try to extract word from recieved packet.
+         * @param res Variable to store result into.
+         * @returns true in case of success, false otherwise.
+         */
+        bool read_word(uint16_t &res);
+
+        /**
+         * @brief Try to extract string from recieved packet.
+         * @param res Variable to store result into.
+         * @returns true in case of success, false otherwise.
+         */
+        bool read_string(std::string &res);
+
+        /**
+         * @brief Try to validate correctness of extension option
+         * from recieved OACK packet (validation is based on appropriate
+         * RFCs).
+         * @param option Name of TFTP extension option to validate.
+         * @param value Value of TFTP extension option to validate
+         * @returns true in case of success, false otherwise.
+         */
         bool validate_option(std::string option, std::string value);
-
-        bool check_packet_type(uint16_t resp_type);
-
-        void send_ERROR(err_code_t code, std::string msg);
-
-        bool check_max_blksize(int block_size);
-
-        bool realloc_buffers();
 };
 
 #endif

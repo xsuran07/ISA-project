@@ -44,6 +44,11 @@ class Terminal
          */
         bool perform_command();
 
+        /**
+         * @brief Prints help for interactive mode.
+         */
+        void print_help();
+
 };
 
 #endif

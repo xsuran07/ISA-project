@@ -149,7 +149,7 @@ class Tftp_parameters
          * @param option String to add into error message (optional).
          * @returns Converted number if successful, -1 on error.
          */
-        static long convert_to_number(std::string str, std::string option);
+        static int convert_to_number(std::string str, std::string option);
 
         /**
          * @brief Static method. Splits given string with specified pattern and stores parts into given

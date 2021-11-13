@@ -125,7 +125,7 @@ bool Tftp_client::communicate(Tftp_parameters *params)
         return false;
     }
 
-    // check if proposed block isze can be satisfy with available MTU
+    // check if proposed block size can be satisfy with available MTU
     if(!check_max_blksize(params->get_size())) {
         close(this->sock);
         return false;
@@ -303,7 +303,7 @@ bool Tftp_client::prepare_file(Tftp_parameters *params)
 
     if(params->get_req_type() == Tftp_parameters::READ) {
         mode |= std::fstream::out;
-        str = "Opening of file \"" + name_of_file + "\"failed!";
+        str = "Opening of file \"" + name_of_file + "\" failed!";
     } else {
         mode |= std::fstream::in;
         str = "Cannot find file \"" + name_of_file + "\" in current directory!";
@@ -393,7 +393,6 @@ bool Tftp_client::check_max_blksize(int block_size)
     }
 
     min_mtu = min_mtu - headers;
-    std::cout << "MIn: " << min_mtu << std::endl;
 
     if(block_size > min_mtu) {
         this->options["blksize"] = std::to_string(min_mtu);
@@ -891,6 +890,7 @@ bool Tftp_client::write_options()
         // maximum size of request packet is 512 bytes
         len = it->first.size() + it->second.size() + 2;
         if(this->out_curr_pos + len > MAX_REQUEST_SIZE) {
+            std::cout << "Warning! Maximum allowed size of request packet is 512 - extra options has been stripped off." << std::endl;
             break;
         }
 

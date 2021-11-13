@@ -28,10 +28,10 @@ void Tftp_parameters::print_params()
 
 // STATIC METHODS
 
-long Tftp_parameters::convert_to_number(std::string str, std::string option = "")
+int Tftp_parameters::convert_to_number(std::string str, std::string option = "")
 {
     char *end;
-    long res = std::strtol(str.c_str(), &end, 10);
+    int res = std::strtol(str.c_str(), &end, 10);
 
     if(*end) {
         std::cerr << option << " may consist of digits only! " << std::endl;
@@ -39,10 +39,11 @@ long Tftp_parameters::convert_to_number(std::string str, std::string option = ""
     }
 
     if(res <= 0) {
-        std::cerr << option << " must be a number larger than 0" << std::endl;
+        std::cerr << option << " must be a number larger than 0 (or overflow)!" << std::endl;
         return -1;       
     }
 
+    std::cout << res << std::endl;
     return res;
 }
 
@@ -216,7 +217,12 @@ bool Tftp_parameters::set_size(std::string str)
 {
     long ret;
 
-    if((ret =convert_to_number(str, "Block size")) < 0) {
+    if((ret = convert_to_number(str, "Block size")) < 0) {
+        return false;
+    }
+
+    if(ret < 8 || ret > 65464) {
+        std::cerr << "Only values from range 8-65464 are valid for blksize option!" << std::endl;
         return false;
     }
 
@@ -226,9 +232,19 @@ bool Tftp_parameters::set_size(std::string str)
 
 bool Tftp_parameters::set_timeout(std::string str)
 {
-    this->params.timeout = convert_to_number(str, "Timeout");
-    
-    return this->params.timeout > 0;
+    int ret;
+
+    if((ret = convert_to_number(str, "Timeout")) < 0) {
+        return false;
+    }
+
+    if(ret == 0 || ret > 255) {
+        std::cerr << "Only values from range 1-255 are valid for timeout option!" << std::endl;
+        return false;
+    }
+
+    this->params.timeout = ret;
+    return true;
 }
 
 bool Tftp_parameters::check_req_type(request_type_t option)

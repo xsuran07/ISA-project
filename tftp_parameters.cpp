@@ -43,7 +43,6 @@ int Tftp_parameters::convert_to_number(std::string str, std::string option = "")
         return -1;       
     }
 
-    std::cout << res << std::endl;
     return res;
 }
 
@@ -131,7 +130,7 @@ bool Tftp_parameters::parse(size_t &curr, std::vector<std::string> options)
     // invalid option
     } else {
         ret = false;
-        std::cerr << "Invalid option \"" << options[curr] << "\"! See HELP." << std::endl;
+        std::cerr << "Invalid option \"" << options[curr] << "\"! See help." << std::endl;
     }
 
     return ret;

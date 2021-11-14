@@ -112,9 +112,6 @@ bool Tftp_client::communicate(Tftp_parameters *params)
 
     init(params);
 
-    // set extension options values
-    set_options(params);
-
     // process and store address of the server
     if(!process_address(params)) {
         return false;
@@ -125,15 +122,18 @@ bool Tftp_client::communicate(Tftp_parameters *params)
         return false;
     }
 
-    // check if proposed block size can be satisfy with available MTU
-    if(!check_max_blksize(params->get_size())) {
+    // try to open specified file
+    if(!prepare_file(params)) {
         close(this->sock);
         return false;
     }
 
-    // try to open specified file
-    if(!prepare_file(params)) {
-        close(this->sock);
+    // set extension options values
+    set_options(params);
+
+    // check if proposed block size can be satisfy with available MTU
+    if(!check_max_blksize(params->get_size())) {
+        cleanup();
         return false;
     }
 
@@ -523,11 +523,6 @@ bool Tftp_client::check_address_ipv4(struct sockaddr_in *addr)
 #endif
 
     do {
-        //check address
-        if(addr->sin_addr.s_addr != origin->sin_addr.s_addr) {
-            break;
-        }
-
         // in case of first response, get server's TID
         if(this->first) {
             this->first = false;
@@ -565,7 +560,6 @@ bool Tftp_client::check_address_ipv6(struct sockaddr_in6 *addr)
 {
     char buf[INET6_ADDRSTRLEN];
     struct sockaddr_in6 *origin = (struct sockaddr_in6 *) &this->addr;
-    bool ok = true;
 
     inet_ntop(AF_INET, &addr->sin6_addr.s6_addr, buf, INET6_ADDRSTRLEN);
 #ifdef DEBUG
@@ -573,18 +567,6 @@ bool Tftp_client::check_address_ipv6(struct sockaddr_in6 *addr)
     std::cout << "PORT: " << ntohs(addr->sin6_port) << std::endl;
 #endif
     do {
-        for(int i = 0; i < 16; i++) {
-            if(origin->sin6_addr.s6_addr[i] != addr->sin6_addr.s6_addr[i]) {
-                std::cerr << "Packet from unexpected source (ipv6)!" << std::endl;
-                ok = false;
-                break;
-            }
-        }
-
-        if(!ok) {
-            break;
-        }
-
         // in case of first response, get server's TID
         if(this->first) {
             this->first = false;
@@ -807,7 +789,7 @@ bool Tftp_client::write_two_bytes(uint8_t c1, uint8_t c2)
     this->out_curr_pos++;
 
     // c2 byte fits into current data block
-    if(this->out_curr_pos < this->block_size) {
+    if(this->out_curr_pos - 4 < this->block_size) {
         this->out_buffer[this->out_curr_pos] = c2;
         this->out_curr_pos++;
     // c2 byte will be part of next data block
@@ -815,7 +797,6 @@ bool Tftp_client::write_two_bytes(uint8_t c1, uint8_t c2)
         this->bytes_left.push_back(c2);
     }
 
-    this->active_cr = c2 == '\r';
     return true;
 }
 
@@ -826,16 +807,15 @@ bool Tftp_client::write_byte(uint8_t b)
     }
 
     if(!this->binary) {
-        // netascii line ending
-        if(!this->active_cr && b == '\n') {
+        // end of line is CR + LF in netascii
+        if(b == '\n') {
             return write_two_bytes('\r', '\n');
         // CR has to be followed by \0
-        } else if(this->active_cr && b != '\n') {
-            return write_two_bytes('\0', b);
+        } else if(b == '\r') {
+            return write_two_bytes('\r', '\0');
         }
     }
 
-    this->active_cr = b == '\r';
     this->out_buffer[this->out_curr_pos] = b;
     this->out_curr_pos++;
     return true;
@@ -995,7 +975,6 @@ bool Tftp_client::fill_DATA()
 
     this->out_curr_pos = 0; // reinitialize
     this->exp_type = OPCODE_ACK;
-    this->active_cr = false;
 
     do {
         if(!write_word(OPCODE_DATA)) {
@@ -1014,13 +993,19 @@ bool Tftp_client::fill_DATA()
         return false;
     }
 
-    // write bytes which were processed but didn't fit last block
-    for(size_t i = 0; i < this->bytes_left.size(); i++) {
-        if(!write_byte(this->bytes_left[i])) {
-            return false;
+    if(!this->binary) {
+        this->binary = true;
+
+        // write bytes which were processed but didn't fit last block
+        for(size_t i = 0; i < this->bytes_left.size(); i++) {
+            if(!write_byte(this->bytes_left[i])) {
+                return false;
+            }
         }
+
+        this->bytes_left.clear();
+        this->binary = false;
     }
-    this->bytes_left.clear();
 
     // try to fill another block of data
     while(this->out_curr_pos - 4 < this->block_size) {
@@ -1038,6 +1023,8 @@ bool Tftp_client::fill_DATA()
         }
     }
 
+    this->log += "block number " + std::to_string(block_num) + ", ";
+    this->log += std::to_string(this->out_curr_pos - 4) + " bytes ";
     this->cur_size += this->out_curr_pos - 4;
     return true;
 }

@@ -365,6 +365,10 @@ bool Tftp_client::check_max_blksize(int block_size)
 
     // check all interefaces
     for(struct ifaddrs *a = addrs; a != NULL; a = a->ifa_next) {
+        if(!a->ifa_addr) {
+            continue;
+        }
+
         // we're interested only in address family same as our socket
         if(a->ifa_addr->sa_family != this->addr.ss_family) {
             continue;
